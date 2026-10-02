@@ -1,0 +1,15 @@
+Source: poc-pinger
+Section: utils
+Priority: optional
+Maintainer: Chris <goabonga@pm.me>
+Build-Depends: debhelper-compat (= 13), golang-go (>= 2:1.22~)
+Standards-Version: 4.6.2
+Homepage: https://github.com/goabonga/poc-app
+
+Package: poc-pinger
+Architecture: any
+Depends: ${misc:Depends}
+Description: reports TCP connect latency
+ Demo CLI binary from poc-app, packaged independently per component and
+ released by multicz. Part of the poc-app / poc-apt / poc-aur end-to-end
+ packaging proof of concept.

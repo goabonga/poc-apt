@@ -1,0 +1,16 @@
+#!/usr/bin/make -f
+
+# Launchpad's builders have no network access: scripts/build-source.sh runs
+# `go mod vendor` before assembling the orig tarball, so -mod=vendor is the
+# only mode that can possibly succeed here.
+export CGO_ENABLED=0
+export GOFLAGS=-mod=vendor
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	go build -trimpath -ldflags='-s -w' -o poc-pinger ./cmd/pinger
+
+override_dh_auto_install:
+	install -Dm755 poc-pinger debian/poc-pinger/usr/bin/poc-pinger

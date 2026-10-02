@@ -1,0 +1,5 @@
+poc-greeter (0.1.0-1) unstable; urgency=medium
+
+  * Initial packaging, tracking poc-app's greeter-v0.1.0.
+
+ -- Chris <goabonga@pm.me>  Fri, 02 Oct 2026 18:33:53 +0200
