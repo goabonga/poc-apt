@@ -100,11 +100,14 @@ jobs:
           gh release create "$tag" "$deb" --title "$tag" \
             --notes "Debian package built from poc-app@$tag." \
             --repo "${{ github.repository }}"
-          # `gh`'s own JSON schema names this field "url", not the raw REST
-          # API's "browser_download_url" - confirmed for real: the wrong
-          # name silently resolved to empty rather than erroring.
+          # The plain "url" field (gh's name for the raw REST API's
+          # "browser_download_url") doesn't accept a Bearer token for a
+          # private repo's asset - confirmed for real, 404 regardless of
+          # -L. "apiUrl" (the /repos/.../releases/assets/<id> endpoint)
+          # does, with an Accept: application/octet-stream header -
+          # that's what package-published.yml fetches with.
           url=$(gh release view "$tag" --repo "${{ github.repository }}" \
-            --json assets -q ".assets[0].url")
+            --json assets -q ".assets[0].apiUrl")
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
       - name: Check GPG availability

@@ -103,7 +103,17 @@ mkdir -p "$SRC_DIR"
 tar -xzf "$WORK/${PKG}_${VERSION}.orig.tar.gz" -C "$SRC_DIR"
 cp -r "$ROOT/packages/$COMPONENT/debian" "$SRC_DIR/debian"
 
-( cd "$SRC_DIR" && dpkg-buildpackage "$MODE" -us -uc )
+# -sa forces the orig tarball into the upload every time. Without it,
+# dpkg-genchanges' default heuristic only includes it when the upstream
+# version "looks new" (differs from the entry right below it in
+# debian/changelog) - confirmed for real: a Launchpad rejection
+# ("Unable to find poc-hello_0.1.0.orig.tar.gz in upload or
+# distribution") the moment a second same-upstream-version test run
+# added its own changelog entry on top of the first, since each test's
+# version is unique (DEB_REVISION) but the rejected first upload never
+# actually left an orig tarball on Launchpad's side for dpkg to assume
+# was already there.
+( cd "$SRC_DIR" && dpkg-buildpackage "$MODE" -us -uc -sa )
 
 install -d "$ROOT/dist"
 find "$WORK" -maxdepth 1 -name "${PKG}_${VERSION}*" -exec cp {} "$ROOT/dist/" \;
