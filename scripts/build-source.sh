@@ -45,6 +45,32 @@ echo "vendoring Go modules"
 # builder never has to touch the network.
 tar -czf "$WORK/${PKG}_${VERSION}.orig.tar.gz" -C "$WORK/extracted" .
 
+DEB_CHANGELOG="$ROOT/packages/$COMPONENT/debian/changelog"
+CURRENT_VERSION=$(dpkg-parsechangelog -l "$DEB_CHANGELOG" -S Version)
+if [ "$CURRENT_VERSION" = "$VERSION-1" ]; then
+  echo "debian/changelog already at $VERSION-1, leaving it as-is"
+else
+  echo "updating debian/changelog from poc-app's cmd/$COMPONENT/CHANGELOG.md"
+  # Pull this release's actual notes out of multicz's own per-component
+  # CHANGELOG.md (Keep a Changelog headings) rather than inventing text -
+  # the Debian changelog should say what the upstream changelog says.
+  mapfile -t notes < <(awk -v ver="$VERSION" '
+    $0 ~ "^## \\[" ver "\\]" { capture=1; next }
+    capture && /^## \[/        { exit }
+    capture && /^- /           { sub(/^- /, ""); print }
+  ' "$WORK/extracted/cmd/$COMPONENT/CHANGELOG.md")
+  if [ "${#notes[@]}" -eq 0 ]; then
+    notes=("New upstream release: poc-app $TAG.")
+  fi
+
+  export DEBEMAIL="goabonga@pm.me" DEBFULLNAME="Chris"
+  dch --newversion "$VERSION-1" --distribution unstable \
+    --changelog "$DEB_CHANGELOG" "${notes[0]}"
+  for note in "${notes[@]:1}"; do
+    dch --append --changelog "$DEB_CHANGELOG" "$note"
+  done
+fi
+
 SRC_DIR="$WORK/${PKG}-${VERSION}"
 mkdir -p "$SRC_DIR"
 tar -xzf "$WORK/${PKG}_${VERSION}.orig.tar.gz" -C "$SRC_DIR"

@@ -1,5 +1,7 @@
-poc-greeter (0.1.0-1) unstable; urgency=medium
+poc-greeter (0.0.0-1) unstable; urgency=medium
 
-  * Initial packaging, tracking poc-app's greeter-v0.1.0.
+  * Initial packaging scaffold. No poc-app release has been built yet -
+    scripts/build-source.sh prepends the real entry from poc-app's own
+    CHANGELOG.md above this one on the first publish run.
 
  -- Chris <goabonga@pm.me>  Fri, 02 Oct 2026 18:33:53 +0200

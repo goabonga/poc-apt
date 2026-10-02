@@ -37,6 +37,17 @@ jobs:
       - name: Build source + binary package
         run: scripts/build-source.sh "${{ inputs.component }}" "${{ inputs.version }}" -b
 
+      - name: Commit the updated changelog
+        # build-source.sh bumps packages/<component>/debian/changelog in
+        # place from poc-app's own CHANGELOG.md before building, so the
+        # package version and release notes actually track the release.
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packages/${{ inputs.component }}/debian/changelog
+          git commit -m "chore(${{ inputs.component }}): bump to ${{ inputs.version }}" || echo "nothing to commit"
+          git push
+
       - uses: actions/upload-artifact@v4
         with:
           name: poc-${{ inputs.component }}_${{ inputs.version }}
