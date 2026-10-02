@@ -1,3 +1,9 @@
+poc-pinger (0.1.0-1) unstable; urgency=medium
+
+  * scaffold greeter and pinger CLIs (`ff82661`)
+
+ -- Chris <goabonga@pm.me>  Fri, 02 Oct 2026 22:51:13 +0000
+
 poc-pinger (0.0.0-1) unstable; urgency=medium
 
   * Initial packaging scaffold. No poc-app release has been built yet -
