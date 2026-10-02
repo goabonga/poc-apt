@@ -32,14 +32,20 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "fetching poc-app@$TAG"
-# poc-app is a private repo, so codeload.github.com 404s an unauthenticated
-# request regardless of retries - confirmed for real (10 retries, still 404,
-# then 200 the moment an Authorization header was added). GH_TOKEN needs
-# Contents:read on poc-app; the caller passes CROSS_REPO_TOKEN for that.
+# poc-app is a private repo. The plain codeload.github.com/.../archive/
+# URL 404s even with a correctly-scoped Authorization header when the
+# token is a fine-grained PAT - confirmed for real against the user's own
+# PAT (Contents: Read and write on poc-app, verified in the GitHub UI).
+# The official REST API tarball endpoint works instead: it 302s to a
+# pre-signed, time-limited codeload URL (a `?token=` query string, not a
+# header), so the redirect needs no Authorization forwarding at all -
+# also confirmed for real. GH_TOKEN needs Contents:read on poc-app; the
+# caller passes CROSS_REPO_TOKEN for that.
 auth=()
 [ -n "${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")
-curl -fsSL "${auth[@]}" -o "$WORK/src.tar.gz" \
-  "https://github.com/goabonga/poc-app/archive/refs/tags/$TAG.tar.gz"
+curl -fsSL -L "${auth[@]}" -H "Accept: application/vnd.github+json" \
+  -o "$WORK/src.tar.gz" \
+  "https://api.github.com/repos/goabonga/poc-app/tarball/$TAG"
 
 mkdir -p "$WORK/extracted"
 tar -xzf "$WORK/src.tar.gz" -C "$WORK/extracted" --strip-components=1
