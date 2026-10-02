@@ -1,0 +1,74 @@
+name: publish
+
+# Builds the Debian source + binary package for one poc-app component and
+# version, then uploads the source package to the Launchpad PPA when GPG
+# signing secrets are configured. Designed to be called either by hand or
+# by poc-app's release workflow once the cross-repo dispatch is wired up.
+
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: poc-app component to package
+        required: true
+        type: choice
+        options: [greeter, pinger]
+      version:
+        description: upstream version (must already be tagged "<component>-v<version>" on poc-app)
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: build (${{ inputs.component }} ${{ inputs.version }})
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq devscripts debhelper golang-go
+
+      - name: Build source + binary package
+        run: scripts/build-source.sh "${{ inputs.component }}" "${{ inputs.version }}" -b
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: poc-${{ inputs.component }}_${{ inputs.version }}
+          path: dist/*
+
+      - name: Check GPG availability
+        id: gpg
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          if [ -n "$GPG_PRIVATE_KEY" ] && [ -n "$GPG_PASSPHRASE" ] && [ -n "${{ vars.LAUNCHPAD_PPA }}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::GPG secrets or vars.LAUNCHPAD_PPA unset; built locally only, not uploaded to the PPA"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import and unlock GPG key
+        if: steps.gpg.outputs.available == 'true'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          echo test | gpg --batch --yes --passphrase "$GPG_PASSPHRASE" \
+            --pinentry-mode loopback --sign > /dev/null
+
+      - name: Sign and upload source package to the PPA
+        if: steps.gpg.outputs.available == 'true'
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          scripts/build-source.sh "${{ inputs.component }}" "${{ inputs.version }}" -S
+          KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')
+          debsign -k"$KEY_ID" -p"gpg --batch --yes --passphrase $GPG_PASSPHRASE --pinentry-mode loopback" \
+            dist/poc-${{ inputs.component }}_${{ inputs.version }}-1_source.changes
+          dput "${{ vars.LAUNCHPAD_PPA }}" \
+            dist/poc-${{ inputs.component }}_${{ inputs.version }}-1_source.changes
