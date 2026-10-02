@@ -32,23 +32,14 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "fetching poc-app@$TAG"
-# codeload.github.com can 404 for a few seconds right after a tag is pushed
-# - the archive isn't generated synchronously with the push. Harmless in
-# isolation, but this script is meant to be dispatched within seconds of
-# that push by poc-app's own release workflow, so a plain curl --retry
-# (which only retries on 5xx/connection errors, not 404) isn't enough.
-for attempt in $(seq 1 10); do
-  if curl -fsSL -o "$WORK/src.tar.gz" \
-      "https://github.com/goabonga/poc-app/archive/refs/tags/$TAG.tar.gz"; then
-    break
-  fi
-  if [ "$attempt" -eq 10 ]; then
-    echo "poc-app@$TAG still not fetchable after 10 attempts" >&2
-    exit 1
-  fi
-  echo "not available yet (attempt $attempt/10), retrying in 3s"
-  sleep 3
-done
+# poc-app is a private repo, so codeload.github.com 404s an unauthenticated
+# request regardless of retries - confirmed for real (10 retries, still 404,
+# then 200 the moment an Authorization header was added). GH_TOKEN needs
+# Contents:read on poc-app; the caller passes CROSS_REPO_TOKEN for that.
+auth=()
+[ -n "${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")
+curl -fsSL "${auth[@]}" -o "$WORK/src.tar.gz" \
+  "https://github.com/goabonga/poc-app/archive/refs/tags/$TAG.tar.gz"
 
 mkdir -p "$WORK/extracted"
 tar -xzf "$WORK/src.tar.gz" -C "$WORK/extracted" --strip-components=1

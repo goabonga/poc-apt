@@ -35,6 +35,8 @@ jobs:
           sudo apt-get install -y -qq devscripts debhelper golang-go
 
       - name: Build source + binary package
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
         run: scripts/build-source.sh "${{ inputs.component }}" "${{ inputs.version }}" -b
 
       - name: Commit the updated changelog
@@ -98,6 +100,7 @@ jobs:
         if: steps.gpg.outputs.available == 'true'
         env:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
         run: |
           scripts/build-source.sh "${{ inputs.component }}" "${{ inputs.version }}" -S
           KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')
