@@ -69,8 +69,11 @@ jobs:
           gh release create "$tag" "$deb" --title "$tag" \
             --notes "Debian package built from poc-app@$tag." \
             --repo "${{ github.repository }}"
+          # `gh`'s own JSON schema names this field "url", not the raw REST
+          # API's "browser_download_url" - confirmed for real: the wrong
+          # name silently resolved to empty rather than erroring.
           url=$(gh release view "$tag" --repo "${{ github.repository }}" \
-            --json assets -q ".assets[0].browser_download_url")
+            --json assets -q ".assets[0].url")
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
       - name: Check GPG availability
