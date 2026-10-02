@@ -32,7 +32,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq devscripts debhelper golang-go
+          sudo apt-get install -y -qq build-essential devscripts debhelper golang-go
 
       - name: Build source + binary package
         env:
