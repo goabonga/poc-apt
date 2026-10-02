@@ -1,3 +1,9 @@
+poc-pinger (0.1.0-1+test1790985316) noble; urgency=medium
+
+  * scaffold greeter and pinger CLIs (`ff82661`)
+
+ -- Chris <goabonga@pm.me>  Fri, 02 Oct 2026 23:55:57 +0000
+
 poc-pinger (0.1.0-1) noble; urgency=medium
 
   * scaffold greeter and pinger CLIs (`ff82661`)
