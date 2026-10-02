@@ -53,12 +53,25 @@ jobs:
         # build-source.sh bumps packages/<component>/debian/changelog in
         # place from poc-app's own CHANGELOG.md before building, so the
         # package version and release notes actually track the release.
+        # The concurrency group above doesn't reliably serialize two
+        # workflow_dispatch calls fired within a second or two of each
+        # other (confirmed for real on poc-aur's identical step: both
+        # runs started and ran fully concurrently anyway), so the push
+        # itself has to tolerate the race instead of trusting GitHub's
+        # scheduler to prevent it.
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add packages/${{ inputs.component }}/debian/changelog
-          git commit -m "chore(${{ inputs.component }}): bump to ${{ inputs.version }}" || echo "nothing to commit"
-          git push
+          git commit -m "chore(${{ inputs.component }}): bump to ${{ inputs.version }}" || { echo "nothing to commit"; exit 0; }
+          for attempt in 1 2 3 4 5; do
+            git push && exit 0
+            echo "push rejected (attempt $attempt/5), rebasing onto origin/main and retrying"
+            sleep "$((RANDOM % 5 + 1))"
+            git fetch origin main
+            git rebase origin/main
+          done
+          echo "::error::could not push after 5 attempts" && exit 1
 
       - uses: actions/upload-artifact@v4
         with:
