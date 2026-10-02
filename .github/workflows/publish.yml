@@ -39,6 +39,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Compute a unique Debian revision
+        # Launchpad rejects re-uploading a version it already has
+        # ("Rejected" email, no build) - confirmed for real, hit
+        # repeatedly while re-testing the same poc-app version. Computed
+        # once and shared (via $GITHUB_ENV) by both build-source.sh calls
+        # below, so one publish run produces one consistent version.
+        run: echo "DEB_REVISION=1+test$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
@@ -88,7 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ inputs.component }}-v${{ inputs.version }}"
-          deb="dist/poc-${{ inputs.component }}_${{ inputs.version }}-1_amd64.deb"
+          deb="dist/poc-${{ inputs.component }}_${{ inputs.version }}-${{ env.DEB_REVISION }}_amd64.deb"
           gh release create "$tag" "$deb" --title "$tag" \
             --notes "Debian package built from poc-app@$tag." \
             --repo "${{ github.repository }}"
@@ -131,9 +139,9 @@ jobs:
           scripts/build-source.sh "${{ inputs.component }}" "${{ inputs.version }}" -S
           KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')
           debsign -k"$KEY_ID" -p"gpg --batch --yes --passphrase $GPG_PASSPHRASE --pinentry-mode loopback" \
-            dist/poc-${{ inputs.component }}_${{ inputs.version }}-1_source.changes
+            dist/poc-${{ inputs.component }}_${{ inputs.version }}-${{ env.DEB_REVISION }}_source.changes
           dput "${{ vars.LAUNCHPAD_PPA }}" \
-            dist/poc-${{ inputs.component }}_${{ inputs.version }}-1_source.changes
+            dist/poc-${{ inputs.component }}_${{ inputs.version }}-${{ env.DEB_REVISION }}_source.changes
 
       - name: Report back to poc-app
         # CROSS_REPO_TOKEN is the same fine-grained PAT poc-app uses to

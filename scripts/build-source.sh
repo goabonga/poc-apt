@@ -57,10 +57,18 @@ echo "vendoring Go modules"
 # builder never has to touch the network.
 tar -czf "$WORK/${PKG}_${VERSION}.orig.tar.gz" -C "$WORK/extracted" .
 
+# Launchpad rejects re-uploading a version it has already accepted
+# ("Rejected" email, no build) - confirmed for real, hit repeatedly while
+# re-testing the same poc-app version. DEB_REVISION (set once by
+# publish.yml via $GITHUB_ENV and shared by both build-source.sh calls in
+# that run) makes every real publish run distinct; unset outside that
+# context defaults to the current time, so local/manual runs still get a
+# unique version.
+REVISION="${DEB_REVISION:-1+test$(date +%s)}"
 DEB_CHANGELOG="$ROOT/packages/$COMPONENT/debian/changelog"
 CURRENT_VERSION=$(dpkg-parsechangelog -l "$DEB_CHANGELOG" -S Version)
-if [ "$CURRENT_VERSION" = "$VERSION-1" ]; then
-  echo "debian/changelog already at $VERSION-1, leaving it as-is"
+if [ "$CURRENT_VERSION" = "$VERSION-$REVISION" ]; then
+  echo "debian/changelog already at $VERSION-$REVISION, leaving it as-is"
 else
   echo "updating debian/changelog from poc-app's cmd/$COMPONENT/CHANGELOG.md"
   # Pull this release's actual notes out of multicz's own per-component
@@ -83,7 +91,7 @@ else
   # several at once reheaders a per-series copy before each build instead
   # (see obd-tui's reheader_changelog.py for that pattern).
   export DEBEMAIL="goabonga@pm.me" DEBFULLNAME="Chris"
-  dch --newversion "$VERSION-1" --distribution noble \
+  dch --newversion "$VERSION-$REVISION" --distribution noble \
     --changelog "$DEB_CHANGELOG" "${notes[0]}"
   for note in "${notes[@]:1}"; do
     dch --append --changelog "$DEB_CHANGELOG" "$note"
