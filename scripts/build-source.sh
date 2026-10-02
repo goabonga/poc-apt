@@ -75,8 +75,15 @@ else
     notes=("New upstream release: poc-app $TAG.")
   fi
 
+  # "noble" (24.04 LTS), not Debian's "unstable": Launchpad PPAs only
+  # recognize real Ubuntu series names and silently reject (rejection
+  # email, no build ever appears) anything else - confirmed for real, a
+  # run that uploaded fine over FTP never produced a build because this
+  # said "unstable". One series only for now; a PPA that needs to serve
+  # several at once reheaders a per-series copy before each build instead
+  # (see obd-tui's reheader_changelog.py for that pattern).
   export DEBEMAIL="goabonga@pm.me" DEBFULLNAME="Chris"
-  dch --newversion "$VERSION-1" --distribution unstable \
+  dch --newversion "$VERSION-1" --distribution noble \
     --changelog "$DEB_CHANGELOG" "${notes[0]}"
   for note in "${notes[@]:1}"; do
     dch --append --changelog "$DEB_CHANGELOG" "$note"

@@ -1,4 +1,4 @@
-poc-greeter (0.0.0-1) unstable; urgency=medium
+poc-greeter (0.0.0-1) noble; urgency=medium
 
   * Initial packaging scaffold. No poc-app release has been built yet -
     scripts/build-source.sh prepends the real entry from poc-app's own
