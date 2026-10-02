@@ -1,9 +1,11 @@
 name: publish
 
 # Builds the Debian source + binary package for one poc-app component and
-# version, then uploads the source package to the Launchpad PPA when GPG
-# signing secrets are configured. Designed to be called either by hand or
-# by poc-app's release workflow once the cross-repo dispatch is wired up.
+# version, publishes the .deb as a poc-apt release (a stable URL regardless
+# of PPA configuration), uploads the source package to the Launchpad PPA
+# when GPG signing secrets are configured, and reports back to poc-app.
+# Can be run by hand, but is normally dispatched by poc-app's release
+# workflow right after it tags a release.
 
 on:
   workflow_dispatch:
@@ -22,6 +24,8 @@ jobs:
   build:
     name: build (${{ inputs.component }} ${{ inputs.version }})
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
 
@@ -37,6 +41,24 @@ jobs:
         with:
           name: poc-${{ inputs.component }}_${{ inputs.version }}
           path: dist/*
+
+      - name: Publish the .deb as a poc-apt release
+        # A stable download URL for the callback below, independent of
+        # whether the PPA secrets are configured - the dispatch loop back
+        # to poc-app should work even before a real Launchpad PPA exists.
+        id: github_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.component }}-v${{ inputs.version }}"
+          deb="dist/poc-${{ inputs.component }}_${{ inputs.version }}-1_amd64.deb"
+          gh release create "$tag" "$deb" --title "$tag" \
+            --notes "Debian package built from poc-app@$tag." \
+            --repo "${{ github.repository }}"
+          url=$(gh release view "$tag" --repo "${{ github.repository }}" \
+            --json assets -q ".assets[0].browser_download_url")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
 
       - name: Check GPG availability
         id: gpg
@@ -72,3 +94,21 @@ jobs:
             dist/poc-${{ inputs.component }}_${{ inputs.version }}-1_source.changes
           dput "${{ vars.LAUNCHPAD_PPA }}" \
             dist/poc-${{ inputs.component }}_${{ inputs.version }}-1_source.changes
+
+      - name: Report back to poc-app
+        # CROSS_REPO_TOKEN is the same fine-grained PAT poc-app uses to
+        # trigger this workflow, with Contents (read/write) on poc-app too
+        # so it can fire this repository_dispatch.
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::secrets.CROSS_REPO_TOKEN unset; poc-app was not notified"
+            exit 0
+          fi
+          gh api repos/goabonga/poc-app/dispatches \
+            -f event_type=package-published \
+            -f "client_payload[component]=${{ inputs.component }}" \
+            -f "client_payload[version]=${{ inputs.version }}" \
+            -f "client_payload[kind]=apt" \
+            -f "client_payload[url]=${{ steps.github_release.outputs.url }}"
