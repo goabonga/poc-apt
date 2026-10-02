@@ -8,7 +8,7 @@
 # Usage:
 #   scripts/build-source.sh <component> <version> [-S|-b]
 #
-# <component> is "greeter" or "pinger"; <version> is the upstream version
+# <component> is "hello" or "pinger"; <version> is the upstream version
 # that was tagged "<component>-v<version>" on poc-app (its release workflow
 # creates that tag). -S builds a source-only package (for `dput` to a
 # Launchpad PPA, the default); -b builds a binary .deb too, for local

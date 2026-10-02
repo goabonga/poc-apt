@@ -1,4 +1,4 @@
-Source: poc-greeter
+Source: poc-hello
 Section: utils
 Priority: optional
 Maintainer: Chris <goabonga@pm.me>
@@ -6,7 +6,7 @@ Build-Depends: debhelper-compat (= 13), golang-go (>= 2:1.22~)
 Standards-Version: 4.6.2
 Homepage: https://github.com/goabonga/poc-app
 
-Package: poc-greeter
+Package: poc-hello
 Architecture: any
 Depends: ${misc:Depends}
 Description: prints a greeting

@@ -10,7 +10,7 @@ export GOFLAGS=-mod=vendor
 	dh $@
 
 override_dh_auto_build:
-	go build -trimpath -ldflags='-s -w' -o poc-greeter ./cmd/greeter
+	go build -trimpath -ldflags='-s -w' -o poc-hello ./cmd/hello
 
 override_dh_auto_install:
-	install -Dm755 poc-greeter debian/poc-greeter/usr/bin/poc-greeter
+	install -Dm755 poc-hello debian/poc-hello/usr/bin/poc-hello

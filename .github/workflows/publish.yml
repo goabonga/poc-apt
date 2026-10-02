@@ -14,7 +14,7 @@ on:
         description: poc-app component to package
         required: true
         type: choice
-        options: [greeter, pinger]
+        options: [hello, pinger]
       version:
         description: upstream version (must already be tagged "<component>-v<version>" on poc-app)
         required: true

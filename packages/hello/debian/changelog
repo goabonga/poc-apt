@@ -1,11 +1,11 @@
-poc-greeter (0.1.0-1) noble; urgency=medium
+poc-hello (0.1.0-1) noble; urgency=medium
 
-  * scaffold greeter and pinger CLIs (`ff82661`)
-  * **greeter**: colorize the greeting (`6cf017a`)
+  * scaffold hello and pinger CLIs (`ff82661`)
+  * **hello**: colorize the greeting (`6cf017a`)
 
  -- Chris <goabonga@pm.me>  Fri, 02 Oct 2026 23:04:13 +0000
 
-poc-greeter (0.0.0-1) noble; urgency=medium
+poc-hello (0.0.0-1) noble; urgency=medium
 
   * Initial packaging scaffold. No poc-app release has been built yet -
     scripts/build-source.sh prepends the real entry from poc-app's own

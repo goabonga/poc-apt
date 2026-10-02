@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        component: [greeter, pinger]
+        component: [hello, pinger]
     steps:
       - uses: actions/checkout@v7
       - name: Install devscripts and python3-debian
