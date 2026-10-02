@@ -1,14 +1,9 @@
 name: publish
 
-# Placeholder publish pipeline: reports a fake download URL back to poc-app
-# instead of actually building. The real build (scripts/build-source.sh,
-# debian/ packaging) works - verified end-to-end for real against the
-# actual private poc-app repo - but the environment quirks around it
-# (build-essential, Docker UID/chown, fine-grained PAT auth) made the
-# cross-repo dispatch + callback loop itself slow to validate. This
-# isolates that loop from the build while it's being exercised on its own;
-# swap the "Fake publish" step back for the real build steps (see git
-# history on this file) once the loop is solid.
+# Builds the Debian source + binary package for one poc-app component and
+# version, publishes the .deb as a poc-apt release (a stable URL regardless
+# of PPA configuration), uploads the source package to the Launchpad PPA
+# when GPG signing secrets are configured, and reports back to poc-app.
 # Can be run by hand, but is normally dispatched by poc-app's release
 # workflow right after it tags a release.
 
@@ -26,14 +21,96 @@ on:
         type: string
 
 jobs:
-  publish:
-    name: publish (${{ inputs.component }} ${{ inputs.version }})
+  build:
+    name: build (${{ inputs.component }} ${{ inputs.version }})
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
-      - name: Fake publish
-        id: fake
+      - uses: actions/checkout@v7
+
+      - name: Install build dependencies
         run: |
-          echo "url=https://example.invalid/poc-apt/poc-${{ inputs.component }}_${{ inputs.version }}-1_amd64.deb" >> "$GITHUB_OUTPUT"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential devscripts debhelper golang-go
+
+      - name: Build source + binary package
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+        run: scripts/build-source.sh "${{ inputs.component }}" "${{ inputs.version }}" -b
+
+      - name: Commit the updated changelog
+        # build-source.sh bumps packages/<component>/debian/changelog in
+        # place from poc-app's own CHANGELOG.md before building, so the
+        # package version and release notes actually track the release.
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packages/${{ inputs.component }}/debian/changelog
+          git commit -m "chore(${{ inputs.component }}): bump to ${{ inputs.version }}" || echo "nothing to commit"
+          git push
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: poc-${{ inputs.component }}_${{ inputs.version }}
+          path: dist/*
+
+      - name: Publish the .deb as a poc-apt release
+        # A stable download URL for the callback below, independent of
+        # whether the PPA secrets are configured - the dispatch loop back
+        # to poc-app should work even before a real Launchpad PPA exists.
+        id: github_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.component }}-v${{ inputs.version }}"
+          deb="dist/poc-${{ inputs.component }}_${{ inputs.version }}-1_amd64.deb"
+          gh release create "$tag" "$deb" --title "$tag" \
+            --notes "Debian package built from poc-app@$tag." \
+            --repo "${{ github.repository }}"
+          # `gh`'s own JSON schema names this field "url", not the raw REST
+          # API's "browser_download_url" - confirmed for real: the wrong
+          # name silently resolved to empty rather than erroring.
+          url=$(gh release view "$tag" --repo "${{ github.repository }}" \
+            --json assets -q ".assets[0].url")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Check GPG availability
+        id: gpg
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          if [ -n "$GPG_PRIVATE_KEY" ] && [ -n "$GPG_PASSPHRASE" ] && [ -n "${{ vars.LAUNCHPAD_PPA }}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::GPG secrets or vars.LAUNCHPAD_PPA unset; built locally only, not uploaded to the PPA"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import and unlock GPG key
+        if: steps.gpg.outputs.available == 'true'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          echo test | gpg --batch --yes --passphrase "$GPG_PASSPHRASE" \
+            --pinentry-mode loopback --sign > /dev/null
+
+      - name: Sign and upload source package to the PPA
+        if: steps.gpg.outputs.available == 'true'
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+        run: |
+          scripts/build-source.sh "${{ inputs.component }}" "${{ inputs.version }}" -S
+          KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')
+          debsign -k"$KEY_ID" -p"gpg --batch --yes --passphrase $GPG_PASSPHRASE --pinentry-mode loopback" \
+            dist/poc-${{ inputs.component }}_${{ inputs.version }}-1_source.changes
+          dput "${{ vars.LAUNCHPAD_PPA }}" \
+            dist/poc-${{ inputs.component }}_${{ inputs.version }}-1_source.changes
 
       - name: Report back to poc-app
         # CROSS_REPO_TOKEN is the same fine-grained PAT poc-app uses to
@@ -51,4 +128,4 @@ jobs:
             -f "client_payload[component]=${{ inputs.component }}" \
             -f "client_payload[version]=${{ inputs.version }}" \
             -f "client_payload[kind]=apt" \
-            -f "client_payload[url]=${{ steps.fake.outputs.url }}"
+            -f "client_payload[url]=${{ steps.github_release.outputs.url }}"
