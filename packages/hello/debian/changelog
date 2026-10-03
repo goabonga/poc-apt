@@ -1,3 +1,10 @@
+poc-hello (0.2.0-1+test1790985697) noble; urgency=medium
+
+  * scaffold greeter and pinger CLIs (`ff82661`)
+  * **greeter**: colorize the greeting (`6cf017a`)
+
+ -- Chris <goabonga@pm.me>  Sat, 03 Oct 2026 00:02:15 +0000
+
 poc-hello (0.1.0-1+test1790985230) noble; urgency=medium
 
   * scaffold greeter and pinger CLIs (`ff82661`)
