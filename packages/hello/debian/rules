@@ -5,6 +5,9 @@
 # only mode that can possibly succeed here.
 export CGO_ENABLED=0
 export GOFLAGS=-mod=vendor
+# The builders run with a HOME that does not exist (/sbuild-nonexistent), so
+# Go's default build cache under it cannot be created.
+export GOCACHE=$(CURDIR)/.gocache
 
 %:
 	dh $@
