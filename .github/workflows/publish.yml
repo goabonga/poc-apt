@@ -6,11 +6,13 @@ name: publish
 #
 #   plan       processes the payload: validates it, applies the defaults and
 #              builds the matrix of series
-#   package    builds the orig tarball and the .deb once, commits the changelog,
-#              publishes the .deb as a poc-apt release and reports it to poc-app
+#   source     builds the orig tarball once and commits the changelog entry
 #   upload     one job per series: signs and uploads its source package
-#   launchpad  waits for the Launchpad builds of what was uploaded, and reports
-#              how they ended to poc-app
+#   launchpad  waits for the Launchpad builds of what was uploaded, lists the
+#              .deb files they produced and reports both to poc-app
+#
+# Nothing is built here: the packages poc-app releases are the ones Launchpad
+# built.
 
 on:
   workflow_dispatch:
@@ -74,8 +76,8 @@ jobs:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: scripts/plan-publish.py
 
-  package:
-    name: package (${{ inputs.component }} ${{ inputs.version }})
+  source:
+    name: source (${{ inputs.component }} ${{ inputs.version }})
     needs: plan
     runs-on: ubuntu-24.04
     permissions:
@@ -93,20 +95,20 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential devscripts debhelper golang-go
 
-      - name: Build the orig tarball and the .deb
+      - name: Prepare the orig tarball and the changelog entry
         env:
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
-        run: scripts/build-source.sh "${{ inputs.component }}" "${{ inputs.version }}" -b
+        run: scripts/build-source.sh "${{ inputs.component }}" "${{ inputs.version }}" -o
 
       - name: Commit the updated changelog
         # build-source.sh bumps packages/<component>/debian/changelog in
-        # place from poc-app's own CHANGELOG.md before building, so the
-        # package version and release notes actually track the release. The
-        # concurrency group does not reliably serialize two workflow_dispatch
-        # calls fired within a second or two of each other (confirmed for
-        # real: both runs started and ran fully concurrently anyway), so the
-        # push itself has to tolerate the race instead of trusting GitHub's
-        # scheduler to prevent it.
+        # place from poc-app's own CHANGELOG.md, so the package version and
+        # release notes actually track the release; the uploads check main
+        # out to get it. The concurrency group does not reliably serialize
+        # two workflow_dispatch calls fired within a second or two of each
+        # other (confirmed for real: both runs started and ran fully
+        # concurrently anyway), so the push itself has to tolerate the race
+        # instead of trusting GitHub's scheduler to prevent it.
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -130,81 +132,25 @@ jobs:
           path: dist/poc-${{ inputs.component }}_${{ inputs.version }}.orig.tar.gz
           if-no-files-found: error
 
-      - name: Publish the .deb as a poc-apt release
-        # A stable download URL for the callback below, independent of
-        # whether the PPA secrets are configured - the dispatch loop back
-        # to poc-app should work even before a real Launchpad PPA exists.
-        id: github_release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          tag="${{ inputs.component }}-v${{ inputs.version }}"
-          deb="dist/poc-${{ inputs.component }}_${{ inputs.version }}-${{ env.DEB_REVISION }}_amd64.deb"
-          if gh release view "$tag" --repo "${{ github.repository }}" > /dev/null 2>&1; then
-            # A rerun for a version that already got this far (a failed
-            # upload to the PPA, say). The .deb of each run has its own
-            # Debian revision and poc-app takes the first asset of the
-            # release, so the release is left with the new .deb only.
-            for asset in $(gh release view "$tag" --repo "${{ github.repository }}" \
-              --json assets -q ".assets[].name"); do
-              gh release delete-asset "$tag" "$asset" --yes --repo "${{ github.repository }}"
-            done
-            gh release upload "$tag" "$deb" --repo "${{ github.repository }}"
-          else
-            gh release create "$tag" "$deb" --title "$tag" \
-              --notes "Debian package built from poc-app@$tag." \
-              --repo "${{ github.repository }}"
-          fi
-          # The plain "url" field (gh's name for the raw REST API's
-          # "browser_download_url") doesn't accept a Bearer token for a
-          # private repo's asset - confirmed for real, 404 regardless of
-          # -L. "apiUrl" (the /repos/.../releases/assets/<id> endpoint)
-          # does, with an Accept: application/octet-stream header -
-          # that's what package-published.yml fetches with.
-          url=$(gh release view "$tag" --repo "${{ github.repository }}" \
-            --json assets -q ".assets[0].apiUrl")
-          echo "url=$url" >> "$GITHUB_OUTPUT"
-
-      - name: Report back to poc-app
-        # CROSS_REPO_TOKEN is the same fine-grained PAT poc-app uses to
-        # trigger this workflow, with Contents (read/write) on poc-app too
-        # so it can fire this repository_dispatch.
-        env:
-          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
-        run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::warning::secrets.CROSS_REPO_TOKEN unset; poc-app was not notified"
-            exit 0
-          fi
-          gh api repos/goabonga/poc-app/dispatches \
-            -f event_type=package-published \
-            -f "client_payload[component]=${{ inputs.component }}" \
-            -f "client_payload[version]=${{ inputs.version }}" \
-            -f "client_payload[kind]=apt" \
-            -f "client_payload[package]=poc-${{ inputs.component }}" \
-            -f "client_payload[ppa]=${{ vars.LAUNCHPAD_PPA }}" \
-            -f "client_payload[url]=${{ steps.github_release.outputs.url }}"
-
       - name: Job summary
         if: ${{ !cancelled() }}
         env:
           JOB_STATUS: ${{ job.status }}
         run: |
           {
-            echo "## Package: ${JOB_STATUS}"
+            echo "## Source: ${JOB_STATUS}"
             echo
             echo "| | |"
             echo "| --- | --- |"
             echo "| Component | \`${{ inputs.component }}\` |"
             echo "| Upstream version | \`${{ inputs.version }}\` |"
             echo "| Debian revision | \`${DEB_REVISION}\` |"
-            echo "| Release | [\`${{ inputs.component }}-v${{ inputs.version }}\`](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${{ inputs.component }}-v${{ inputs.version }}) |"
+            echo "| Orig tarball | \`poc-${{ inputs.component }}_${{ inputs.version }}.orig.tar.gz\`, shared by every series |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   upload:
     name: upload (${{ matrix.series }})
-    needs: [plan, package]
+    needs: [plan, source]
     if: needs.plan.outputs.ppa_upload == 'true'
     runs-on: ubuntu-24.04
     permissions:
@@ -221,7 +167,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # The changelog entry the package job just committed.
+          # The changelog entry the source job just committed.
           ref: main
           persist-credentials: false
 
@@ -289,15 +235,40 @@ jobs:
           path: uploaded-${{ matrix.series }}
           if-no-files-found: error
 
+      - name: Job summary
+        if: ${{ !cancelled() }}
+        env:
+          JOB_STATUS: ${{ job.status }}
+          PPA: ${{ vars.LAUNCHPAD_PPA }}
+          ARCHS: ${{ needs.plan.outputs.archs }}
+        run: |
+          version="${{ inputs.version }}-${DEB_REVISION}~${{ matrix.series }}1"
+          {
+            echo "## Upload ${{ matrix.series }}: ${JOB_STATUS}"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Source package | \`poc-${{ inputs.component }}\` |"
+            echo "| Series | \`${{ matrix.series }}\` |"
+            echo "| Version | \`${version}\` |"
+            echo "| Architectures | \`${ARCHS}\` |"
+            echo "| PPA | \`${PPA}\` |"
+            if [ -f "uploaded-${{ matrix.series }}" ]; then
+              echo "| Upload | sent to Launchpad, which builds it next |"
+            else
+              echo "| Upload | not sent |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # Launchpad builds the uploaded source packages on its own, minutes later and
   # possibly failing: the jobs above only know the uploads went through. This
   # one follows the builds of every series and architecture.
   launchpad:
     name: launchpad build (${{ inputs.component }} ${{ inputs.version }})
-    needs: [plan, package, upload]
+    needs: [plan, source, upload]
     # Also when some uploads failed: the series that did go through still
     # have builds to follow.
-    if: ${{ !cancelled() && needs.plan.outputs.ppa_upload == 'true' && needs.package.result == 'success' }}
+    if: ${{ !cancelled() && needs.plan.outputs.ppa_upload == 'true' && needs.source.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -341,10 +312,32 @@ jobs:
           VERSIONS: ${{ steps.uploaded.outputs.versions }}
         run: scripts/launchpad-build-status.sh
 
+      - name: Collect the packages Launchpad built
+        id: debs
+        if: ${{ !cancelled() && steps.uploaded.outputs.versions != '' }}
+        env:
+          PPA: ${{ vars.LAUNCHPAD_PPA }}
+          SOURCE: poc-${{ inputs.component }}
+          VERSIONS: ${{ steps.uploaded.outputs.versions }}
+        run: |
+          json=$(scripts/launchpad-binaries.sh)
+          {
+            echo "### Packages built by Launchpad"
+            echo
+            if [ "$(jq length <<<"$json")" -eq 0 ]; then
+              echo "No package was built."
+            else
+              echo "| Series | Architecture | Package |"
+              echo "| --- | --- | --- |"
+              jq -r '.[] | "| \(.series) | \(.arch) | [\(.url | split("/")[-1])](\(.url)) |"' <<<"$json"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Tell poc-app how the build ended
-        # Sent whatever the outcome, so poc-app learns about a failure too.
-        # The same fine-grained PAT as above, with Contents (read/write) on
-        # poc-app for the repository_dispatch.
+        # Sent whatever the outcome, so poc-app learns about a failure too,
+        # and with the packages Launchpad built: they are what poc-app
+        # attaches to its release. The same fine-grained PAT as above, with
+        # Contents (read/write) on poc-app for the repository_dispatch.
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
@@ -353,6 +346,7 @@ jobs:
           STATE: ${{ needs.upload.result != 'success' && 'failure' || steps.build.outputs.state || 'failure' }}
           BUILD_URL: ${{ steps.build.outputs.build_url }}
           LOG_URL: ${{ steps.build.outputs.log_url }}
+          DEBS: ${{ steps.debs.outputs.debs || '[]' }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "::warning::secrets.CROSS_REPO_TOKEN unset; poc-app was not notified"
@@ -363,9 +357,12 @@ jobs:
             -f "client_payload[component]=${{ inputs.component }}" \
             -f "client_payload[version]=${{ inputs.version }}" \
             -f "client_payload[kind]=apt" \
+            -f "client_payload[package]=poc-${{ inputs.component }}" \
+            -f "client_payload[ppa]=${{ vars.LAUNCHPAD_PPA }}" \
             -f "client_payload[status]=$STATE" \
             -f "client_payload[url]=$BUILD_URL" \
-            -f "client_payload[log_url]=$LOG_URL"
+            -f "client_payload[log_url]=$LOG_URL" \
+            -f "client_payload[debs]=$DEBS"
 
       - name: Fail when something did not go through
         if: ${{ needs.upload.result != 'success' || steps.build.outputs.state != 'success' }}
