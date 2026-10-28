@@ -1,3 +1,9 @@
+poc-hello (0.6.0-1+test1793197673) noble; urgency=medium
+
+  * **hello**: describe what it does in its usage (`4ffc195`)
+
+ -- Chris <goabonga@pm.me>  Wed, 28 Oct 2026 14:28:39 +0000
+
 poc-hello (0.4.0-1+test1793188891) noble; urgency=medium
 
   * **hello**: print its usage with --help (`85f27cd`)
