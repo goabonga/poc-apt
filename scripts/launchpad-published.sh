@@ -17,7 +17,7 @@
 # without credentials. Writes
 #   published=true|false
 # to $GITHUB_OUTPUT: true once every binary of the source is Published, false
-# when LIMIT seconds (30 minutes by default) went by first, or when the source
+# when LIMIT seconds (45 minutes by default) went by first, or when the source
 # has no binary. A binary a newer version superseded counts as published.
 
 set -euo pipefail
@@ -26,7 +26,7 @@ set -euo pipefail
 : "${SOURCE:?SOURCE is required}"
 : "${VERSION:?VERSION is required}"
 INTERVAL="${INTERVAL:-30}"
-LIMIT="${LIMIT:-1800}"
+LIMIT="${LIMIT:-2700}"
 
 case "$PPA" in
   ppa:*/*) ;;
