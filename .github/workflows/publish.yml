@@ -95,9 +95,25 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential devscripts debhelper golang-go
 
+      - name: Reuse the orig tarball the PPA already has
+        # Launchpad rejects, by email, an upload whose orig tarball has the
+        # name of one already in the archive but other bytes, and two builds
+        # of the same tree are not byte-identical: a rerun for a version
+        # that was uploaded before reuses the tarball of the PPA (confirmed
+        # for real, the uploads of two reruns never showed up).
+        id: orig
+        if: needs.plan.outputs.ppa_upload == 'true'
+        env:
+          PPA: ${{ vars.LAUNCHPAD_PPA }}
+          SOURCE: poc-${{ inputs.component }}
+          VERSION: ${{ inputs.version }}
+          OUT: ${{ runner.temp }}/orig
+        run: scripts/launchpad-orig.sh
+
       - name: Prepare the orig tarball and the changelog entry
         env:
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+          ORIG_TARBALL: ${{ steps.orig.outputs.path }}
         run: scripts/build-source.sh "${{ inputs.component }}" "${{ inputs.version }}" -o
 
       - name: Commit the updated changelog
@@ -136,6 +152,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           JOB_STATUS: ${{ job.status }}
+          ORIG_TARBALL: ${{ steps.orig.outputs.path }}
         run: |
           {
             echo "## Source: ${JOB_STATUS}"
@@ -145,7 +162,11 @@ jobs:
             echo "| Component | \`${{ inputs.component }}\` |"
             echo "| Upstream version | \`${{ inputs.version }}\` |"
             echo "| Debian revision | \`${DEB_REVISION}\` |"
-            echo "| Orig tarball | \`poc-${{ inputs.component }}_${{ inputs.version }}.orig.tar.gz\`, shared by every series |"
+            if [ -n "$ORIG_TARBALL" ]; then
+              echo "| Orig tarball | reused from the PPA, shared by every series |"
+            else
+              echo "| Orig tarball | built here, shared by every series |"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   upload:
