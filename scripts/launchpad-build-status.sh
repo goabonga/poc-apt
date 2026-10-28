@@ -3,18 +3,20 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Chris <goabonga@pm.me>
 
-# Wait for the Launchpad build of an uploaded source package and report how
-# it ended.
+# Wait for the Launchpad builds of the uploaded source packages and report how
+# they ended.
 #
 # Usage (through the environment, set by publish.yml):
-#   PPA      the PPA the source was uploaded to, e.g. ppa:goabonga/poc
-#   SOURCE   the source package name, e.g. poc-hello
-#   VERSION  the full Debian version, e.g. 0.3.0-1+test1793186573
+#   PPA       the PPA the sources were uploaded to, e.g. ppa:goabonga/poc
+#   SOURCE    the source package name, e.g. poc-hello
+#   VERSIONS  the full Debian versions uploaded, one per series, separated by
+#             spaces, e.g. "0.3.0-1+t1~noble1 0.3.0-1+t1~jammy1"
+#             (VERSION, a single one, is accepted too)
 #
-# Uses the public Launchpad API, so it needs no credentials: the published
+# Uses the public Launchpad API, so it needs no credentials: each published
 # source is looked up first (an upload takes a few minutes to be accepted and
-# published), then its builds are polled until every one reached a final
-# state. Never fails on a failed build: it writes
+# published), then the builds of all of them - one per series and
+# architecture - are polled until every one reached a final state. Never fails on a failed build: it writes
 #   state=success|failure|timeout
 #   build_url=<Launchpad build page>
 #   log_url=<build log>
@@ -25,7 +27,11 @@ set -euo pipefail
 
 : "${PPA:?PPA is required, e.g. ppa:goabonga/poc}"
 : "${SOURCE:?SOURCE is required}"
-: "${VERSION:?VERSION is required}"
+read -ra versions <<<"${VERSIONS:-${VERSION:-}}"
+if [ "${#versions[@]}" -eq 0 ]; then
+  echo "VERSIONS (or VERSION) is required" >&2
+  exit 2
+fi
 INTERVAL="${INTERVAL:-30}"
 LIMIT="${LIMIT:-5400}"
 
@@ -45,28 +51,37 @@ FINAL='["Successfully built","Failed to build","Failed to upload","Chroot proble
 output() { [ -z "${GITHUB_OUTPUT:-}" ] || echo "$1=$2" >> "$GITHUB_OUTPUT"; }
 
 deadline=$((SECONDS + LIMIT))
-source_link=""
+declare -A links=()
 builds='[]'
+ready=0
 
 while [ "$SECONDS" -lt "$deadline" ]; do
-  if [ -z "$source_link" ]; then
-    # The version holds a "+", so it has to be URL-encoded.
-    source_link=$(curl -fsS -G "$archive" \
-      --data-urlencode "ws.op=getPublishedSources" \
-      --data-urlencode "source_name=$SOURCE" \
-      --data-urlencode "exact_match=true" \
-      --data-urlencode "version=$VERSION" \
-      | jq -r '.entries[0].self_link // empty')
-    [ -n "$source_link" ] || echo "waiting for $SOURCE $VERSION to be published"
-  fi
-  if [ -n "$source_link" ]; then
-    builds=$(curl -fsS "$source_link?ws.op=getBuilds" | jq -c '.entries')
-    states=$(jq -r '.[].buildstate' <<<"$builds" | sort | uniq -c | tr '\n' ';')
-    echo "builds: ${states:-none yet}"
-    pending=$(jq --argjson final "$FINAL" '[.[] | select(.buildstate | IN($final[]) | not)] | length' <<<"$builds")
-    if [ "$(jq length <<<"$builds")" -gt 0 ] && [ "$pending" -eq 0 ]; then
-      break
+  builds='[]'
+  ready=1
+  for version in "${versions[@]}"; do
+    if [ -z "${links[$version]:-}" ]; then
+      # The version holds a "+" and a "~", so it has to be URL-encoded.
+      links[$version]=$(curl -fsS -G "$archive" \
+        --data-urlencode "ws.op=getPublishedSources" \
+        --data-urlencode "source_name=$SOURCE" \
+        --data-urlencode "exact_match=true" \
+        --data-urlencode "version=$version" \
+        | jq -r '.entries[0].self_link // empty')
     fi
+    if [ -z "${links[$version]}" ]; then
+      echo "waiting for $SOURCE $version to be published"
+      ready=0
+      continue
+    fi
+    found=$(curl -fsS "${links[$version]}?ws.op=getBuilds" | jq -c '.entries')
+    [ "$(jq length <<<"$found")" -gt 0 ] || ready=0
+    builds=$(jq -c -s 'add' <<<"$builds $found")
+  done
+  states=$(jq -r '.[].buildstate' <<<"$builds" | sort | uniq -c | tr '\n' ';')
+  echo "builds: ${states:-none yet}"
+  pending=$(jq --argjson final "$FINAL" '[.[] | select(.buildstate | IN($final[]) | not)] | length' <<<"$builds")
+  if [ "$ready" -eq 1 ] && [ "$pending" -eq 0 ]; then
+    break
   fi
   sleep "$INTERVAL"
 done
@@ -74,7 +89,7 @@ done
 count=$(jq length <<<"$builds")
 pending=$(jq --argjson final "$FINAL" '[.[] | select(.buildstate | IN($final[]) | not)] | length' <<<"$builds")
 failed=$(jq '[.[] | select(.buildstate != "Successfully built")] | length' <<<"$builds")
-if [ "$count" -eq 0 ] || [ "$pending" -gt 0 ]; then
+if [ "$ready" -ne 1 ] || [ "$count" -eq 0 ] || [ "$pending" -gt 0 ]; then
   state=timeout
 elif [ "$failed" -eq 0 ]; then
   state=success
@@ -93,12 +108,14 @@ output state "$state"
 output build_url "$build_url"
 output log_url "$log_url"
 
-echo "$SOURCE $VERSION: $state"
+echo "$SOURCE ${versions[*]}: $state"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  listed=""
+  for version in "${versions[@]}"; do listed+="\`$version\` "; done
   {
     echo "## Launchpad build: $state"
     echo
-    echo "\`$SOURCE\` \`$VERSION\` on \`$PPA\`"
+    echo "\`$SOURCE\` on \`$PPA\`: ${listed% }"
     echo
     if [ "$count" -eq 0 ]; then
       echo "No build was published before the timeout."
