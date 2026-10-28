@@ -375,7 +375,8 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           VERSION_UPLOADED: ${{ steps.uploaded.outputs.version }}
-          STATE: ${{ steps.build.outputs.state || 'not-uploaded' }}
+          # A build step that died leaves no state: unknown, not "not uploaded".
+          STATE: ${{ steps.build.outputs.state || (steps.uploaded.outputs.version != '' && 'unknown') || 'not-uploaded' }}
           PUBLISHED: ${{ steps.published.outputs.published || 'false' }}
           BUILDS: ${{ steps.build.outputs.builds || '[]' }}
         run: |

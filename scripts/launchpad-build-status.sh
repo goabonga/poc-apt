@@ -31,7 +31,11 @@ set -euo pipefail
 # the same way for a long time, an empty answer included (X-Cache: HIT, a
 # growing Age): a source created minutes ago read as missing, and a build
 # that was over for 25 minutes as still building. It honours no-cache.
-lp_curl() { curl -fsS -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$@"; }
+# Its 5xx answers (a 503 now and then) are transient: they are retried.
+lp_curl() {
+  curl -fsS --retry 6 --retry-delay 5 --retry-max-time 120 \
+    -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$@"
+}
 
 : "${PPA:?PPA is required, e.g. ppa:goabonga/poc}"
 : "${SOURCE:?SOURCE is required}"
@@ -80,7 +84,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
         --data-urlencode "source_name=$SOURCE" \
         --data-urlencode "exact_match=true" \
         --data-urlencode "version=$version" \
-        | jq -r '.entries[0].self_link // empty')
+        | jq -r '.entries[0].self_link // empty') || { echo "::warning::the Launchpad API failed, trying again"; ready=0; continue; }
     fi
     if [ -z "${links[$version]}" ]; then
       if [ $(($(date +%s) - started)) -ge "$PUBLISH_LIMIT" ]; then
@@ -95,7 +99,8 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
       fi
       continue
     fi
-    found=$(lp_curl "${links[$version]}?ws.op=getBuilds" | jq -c '.entries')
+    found=$(lp_curl "${links[$version]}?ws.op=getBuilds" | jq -c '.entries') \
+      || { echo "::warning::the Launchpad API failed, trying again"; ready=0; continue; }
     [ "$(jq length <<<"$found")" -gt 0 ] || ready=0
     builds=$(jq -c -s 'add' <<<"$builds $found")
   done
