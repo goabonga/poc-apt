@@ -1,3 +1,9 @@
+poc-hello (0.2.1-1+test1793147450) noble; urgency=medium
+
+  * Track `go-modules` `0.1.0`
+
+ -- Chris <goabonga@pm.me>  Wed, 28 Oct 2026 00:31:30 +0000
+
 poc-hello (0.2.1-1+test1793139975) noble; urgency=medium
 
   * Track `go-modules` `0.1.0`
