@@ -6,13 +6,14 @@
 # Assemble and build the Debian source package for one poc-app component.
 #
 # Usage:
-#   scripts/build-source.sh <component> <version> [-S|-b]
+#   [SERIES="jammy noble"] scripts/build-source.sh <component> <version> [-S|-b]
 #
 # <component> is "hello" or "pinger"; <version> is the upstream version
 # that was tagged "<component>-v<version>" on poc-app (its release workflow
 # creates that tag). -S builds a source-only package (for `dput` to a
 # Launchpad PPA, the default); -b builds a binary .deb too, for local
-# testing or a GitHub Release attachment.
+# testing or a GitHub Release attachment. With -S, SERIES (space separated,
+# "noble" by default) names the Ubuntu series to make one upload for.
 #
 # Launchpad's builders have no network access, so everything the build
 # needs - including third-party Go modules - has to already be inside the
@@ -98,11 +99,6 @@ else
   done
 fi
 
-SRC_DIR="$WORK/${PKG}-${VERSION}"
-mkdir -p "$SRC_DIR"
-tar -xzf "$WORK/${PKG}_${VERSION}.orig.tar.gz" -C "$SRC_DIR"
-cp -r "$ROOT/packages/$COMPONENT/debian" "$SRC_DIR/debian"
-
 # -sa forces the orig tarball into the upload every time. Without it,
 # dpkg-genchanges' default heuristic only includes it when the upstream
 # version "looks new" (differs from the entry right below it in
@@ -113,8 +109,34 @@ cp -r "$ROOT/packages/$COMPONENT/debian" "$SRC_DIR/debian"
 # version is unique (DEB_REVISION) but the rejected first upload never
 # actually left an orig tarball on Launchpad's side for dpkg to assume
 # was already there.
-( cd "$SRC_DIR" && dpkg-buildpackage "$MODE" -us -uc -sa )
+#
+# A source upload targets one series, named in its changelog, so a source
+# build (-S) makes one upload per series of $SERIES: each from a copy of
+# the package whose first changelog entry is reheadered to that series and
+# versioned "<version>~<series>1" (so every upload is a distinct version
+# Launchpad accepts, and a series never shadows another). All of them share
+# the one orig tarball above - Launchpad rejects a same-named orig whose
+# bytes differ. A binary build (-b) is only the .deb attached to the release,
+# built once from the changelog as committed.
+if [ "$MODE" = "-b" ]; then
+  targets=("")
+else
+  read -ra targets <<<"${SERIES:-noble}"
+fi
 
 install -d "$ROOT/dist"
-find "$WORK" -maxdepth 1 -name "${PKG}_${VERSION}*" -exec cp {} "$ROOT/dist/" \;
+for series in "${targets[@]}"; do
+  BUILD_DIR="$WORK/build${series:+-$series}"
+  SRC_DIR="$BUILD_DIR/${PKG}-${VERSION}"
+  mkdir -p "$SRC_DIR"
+  cp "$WORK/${PKG}_${VERSION}.orig.tar.gz" "$BUILD_DIR/"
+  tar -xzf "$BUILD_DIR/${PKG}_${VERSION}.orig.tar.gz" -C "$SRC_DIR"
+  cp -r "$ROOT/packages/$COMPONENT/debian" "$SRC_DIR/debian"
+  if [ -n "$series" ]; then
+    sed -i "1s/^\([^ ]*\) (\([^)]*\)) [^;]*;/\1 (\2~${series}1) ${series};/" \
+      "$SRC_DIR/debian/changelog"
+  fi
+  ( cd "$SRC_DIR" && dpkg-buildpackage "$MODE" -us -uc -sa )
+  find "$BUILD_DIR" -maxdepth 1 -name "${PKG}_${VERSION}*" -exec cp {} "$ROOT/dist/" \;
+done
 echo "built: $(ls "$ROOT/dist" | wc -l) file(s) in $ROOT/dist"
