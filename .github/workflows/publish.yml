@@ -32,6 +32,12 @@ on:
 concurrency:
   group: publish-${{ github.repository }}
 
+# The Ubuntu series the source package is uploaded for, one upload each.
+# Launchpad builds every one for amd64 and arm64 (the PPA has to have arm64
+# enabled in its settings).
+env:
+  SERIES: jammy noble resolute stonking
+
 jobs:
   build:
     name: build (${{ inputs.component }} ${{ inputs.version }})
@@ -39,9 +45,10 @@ jobs:
     permissions:
       contents: write
     outputs:
-      # The full Debian version uploaded to the PPA; empty when nothing was
-      # uploaded, which skips the Launchpad job.
-      source_version: ${{ steps.upload.outputs.source_version }}
+      # The full Debian versions uploaded to the PPA, one per series and
+      # separated by spaces; empty when nothing was uploaded, which skips the
+      # Launchpad job.
+      source_versions: ${{ steps.upload.outputs.source_versions }}
     steps:
       - uses: actions/checkout@v7
 
@@ -139,20 +146,25 @@ jobs:
           echo test | gpg --batch --yes --passphrase "$GPG_PASSPHRASE" \
             --pinentry-mode loopback --sign > /dev/null
 
-      - name: Sign and upload source package to the PPA
+      - name: Sign and upload the source packages to the PPA
         id: upload
         if: steps.gpg.outputs.available == 'true'
         env:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
         run: |
+          set -euo pipefail
           scripts/build-source.sh "${{ inputs.component }}" "${{ inputs.version }}" -S
           KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')
-          debsign -k"$KEY_ID" -p"gpg --batch --yes --passphrase $GPG_PASSPHRASE --pinentry-mode loopback" \
-            dist/poc-${{ inputs.component }}_${{ inputs.version }}-${{ env.DEB_REVISION }}_source.changes
-          dput "${{ vars.LAUNCHPAD_PPA }}" \
-            dist/poc-${{ inputs.component }}_${{ inputs.version }}-${{ env.DEB_REVISION }}_source.changes
-          echo "source_version=${{ inputs.version }}-${{ env.DEB_REVISION }}" >> "$GITHUB_OUTPUT"
+          versions=""
+          for series in $SERIES; do
+            version="${{ inputs.version }}-${{ env.DEB_REVISION }}~${series}1"
+            changes="dist/poc-${{ inputs.component }}_${version}_source.changes"
+            debsign -k"$KEY_ID" -p"gpg --batch --yes --passphrase $GPG_PASSPHRASE --pinentry-mode loopback" "$changes"
+            dput "${{ vars.LAUNCHPAD_PPA }}" "$changes"
+            versions="${versions} ${version}"
+          done
+          echo "source_versions=${versions# }" >> "$GITHUB_OUTPUT"
 
       - name: Report back to poc-app
         # CROSS_REPO_TOKEN is the same fine-grained PAT poc-app uses to
@@ -177,7 +189,7 @@ jobs:
         env:
           JOB_STATUS: ${{ job.status }}
           PPA: ${{ vars.LAUNCHPAD_PPA }}
-          SOURCE_VERSION: ${{ steps.upload.outputs.source_version }}
+          SOURCE_VERSIONS: ${{ steps.upload.outputs.source_versions }}
         run: |
           {
             echo "## Package build: ${JOB_STATUS}"
@@ -188,8 +200,8 @@ jobs:
             echo "| Upstream version | \`${{ inputs.version }}\` |"
             echo "| Debian version | \`${{ inputs.version }}-${DEB_REVISION}\` |"
             echo "| Release | [\`${{ inputs.component }}-v${{ inputs.version }}\`](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${{ inputs.component }}-v${{ inputs.version }}) |"
-            if [ -n "$SOURCE_VERSION" ]; then
-              echo "| PPA upload | \`${SOURCE_VERSION}\` to \`${PPA}\`, built by the launchpad job |"
+            if [ -n "$SOURCE_VERSIONS" ]; then
+              echo "| PPA upload | ${SOURCE_VERSIONS// /<br>} to \`${PPA}\`, built by the launchpad job |"
             else
               echo "| PPA upload | skipped (no signing secrets or LAUNCHPAD_PPA) |"
             fi
@@ -202,7 +214,7 @@ jobs:
   launchpad:
     name: launchpad build (${{ inputs.component }} ${{ inputs.version }})
     needs: build
-    if: needs.build.outputs.source_version != ''
+    if: needs.build.outputs.source_versions != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -217,7 +229,7 @@ jobs:
         env:
           PPA: ${{ vars.LAUNCHPAD_PPA }}
           SOURCE: poc-${{ inputs.component }}
-          VERSION: ${{ needs.build.outputs.source_version }}
+          VERSIONS: ${{ needs.build.outputs.source_versions }}
         run: scripts/launchpad-build-status.sh
 
       - name: Tell poc-app how the build ended
