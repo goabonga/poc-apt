@@ -12,7 +12,9 @@
 # that was tagged "<component>-v<version>" on poc-app (its release workflow
 # creates that tag). -S builds a source-only package (for `dput` to a
 # Launchpad PPA, the default); -b builds a binary .deb too, for local
-# testing or a GitHub Release attachment. With -S, SERIES (space separated,
+# testing or a GitHub Release attachment; -o only prepares what the source
+# uploads of every series share, the orig tarball (copied to dist/) and the
+# changelog entry. With -S, SERIES (space separated,
 # "noble" by default) names the Ubuntu series to make one upload for, and
 # ARCHS (space separated, e.g. "amd64 arm64"; every architecture by default)
 # the architectures it is built for. ORIG_TARBALL points at an orig tarball
@@ -124,6 +126,13 @@ fi
 # actually left an orig tarball on Launchpad's side for dpkg to assume
 # was already there.
 #
+if [ "$MODE" = "-o" ]; then
+  install -d "$ROOT/dist"
+  cp "$WORK/${PKG}_${VERSION}.orig.tar.gz" "$ROOT/dist/"
+  echo "prepared ${PKG}_${VERSION}.orig.tar.gz and the changelog entry"
+  exit 0
+fi
+
 # A source upload targets one series, named in its changelog, so a source
 # build (-S) makes one upload per series of $SERIES: each from a copy of
 # the package whose first changelog entry is reheadered to that series and
