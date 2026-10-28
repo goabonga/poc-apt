@@ -1,13 +1,16 @@
 name: publish
 
-# Builds the Debian source + binary package for one poc-app component and
-# version, publishes the .deb as a poc-apt release (a stable URL regardless
-# of PPA configuration), uploads the source package to the Launchpad PPA
-# when GPG signing secrets are configured, waits for the Launchpad build, and
-# reports back to poc-app, both that the package is available and how the
-# Launchpad build ended.
-# Can be run by hand, but is normally dispatched by poc-app's release
-# workflow right after it tags a release.
+# Packages one poc-app component and version for the Launchpad PPA, and tells
+# poc-app how it went. Normally dispatched by poc-app's ci workflow right after
+# it tags a release; can be run by hand.
+#
+#   plan       processes the payload: validates it, applies the defaults and
+#              builds the matrix of series
+#   package    builds the orig tarball and the .deb once, commits the changelog,
+#              publishes the .deb as a poc-apt release and reports it to poc-app
+#   upload     one job per series: signs and uploads its source package
+#   launchpad  waits for the Launchpad builds of what was uploaded, and reports
+#              how they ended to poc-app
 
 on:
   workflow_dispatch:
@@ -21,53 +24,76 @@ on:
         description: upstream version (must already be tagged "<component>-v<version>" on poc-app)
         required: true
         type: string
+      series:
+        description: Ubuntu series to upload for, separated by spaces or commas (all of DEFAULT_SERIES when empty)
+        required: false
+        type: string
+      arch:
+        description: architectures Launchpad builds for, separated by spaces or commas (all of DEFAULT_ARCHS when empty)
+        required: false
+        type: string
 
-# poc-app dispatches every bumped component at roughly the same time, and
-# each run commits to the same main branch ("Commit the updated
-# changelog"). Without this, two concurrent runs race: whichever pushes
-# second gets a non-fast-forward rejection, since it checked out main
-# before the first run's commit landed - confirmed for real on poc-aur's
-# identical pattern (greeter's run pushed fine, pinger's failed seconds
-# later on the same branch).
+# A run holds this group from its plan to its last build, so that two
+# components never commit their changelog at the same time (the second push
+# would be rejected as non-fast-forward) nor upload to Launchpad at the same
+# time (whose upload server answers 550 to overlapping uploads, confirmed for
+# real). poc-app dispatches every bumped component at roughly the same time:
+# the second one waits for the first.
 concurrency:
   group: publish-${{ github.repository }}
 
-# The Ubuntu series the source package is uploaded for, one upload each.
-# Launchpad builds every one for amd64 and arm64 (the PPA has to have arm64
-# enabled in its settings).
 env:
-  SERIES: jammy noble resolute stonking
+  DEFAULT_SERIES: jammy noble resolute stonking
+  DEFAULT_ARCHS: amd64 arm64
 
 jobs:
-  build:
-    name: build (${{ inputs.component }} ${{ inputs.version }})
+  plan:
+    name: plan (${{ inputs.component }} ${{ inputs.version }})
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      series: ${{ steps.plan.outputs.series }}
+      archs: ${{ steps.plan.outputs.archs }}
+      revision: ${{ steps.plan.outputs.revision }}
+      ppa_upload: ${{ steps.plan.outputs.ppa_upload }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Process the payload
+        id: plan
+        env:
+          COMPONENT: ${{ inputs.component }}
+          VERSION: ${{ inputs.version }}
+          SERIES: ${{ inputs.series }}
+          ARCHS: ${{ inputs.arch }}
+          PPA: ${{ vars.LAUNCHPAD_PPA }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: scripts/plan-publish.py
+
+  package:
+    name: package (${{ inputs.component }} ${{ inputs.version }})
+    needs: plan
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-    outputs:
-      # The full Debian versions uploaded to the PPA, one per series and
-      # separated by spaces; empty when nothing was uploaded, which skips the
-      # Launchpad job.
-      source_versions: ${{ steps.upload.outputs.source_versions }}
-      # The series whose upload failed, for the summary of the next job.
-      failed_series: ${{ steps.upload.outputs.failed_series }}
+    env:
+      # Launchpad rejects re-uploading a version it already has ("Rejected"
+      # email, no build), so every run has a revision of its own, computed
+      # once by the plan and shared by every job.
+      DEB_REVISION: ${{ needs.plan.outputs.revision }}
     steps:
       - uses: actions/checkout@v7
-
-      - name: Compute a unique Debian revision
-        # Launchpad rejects re-uploading a version it already has
-        # ("Rejected" email, no build) - confirmed for real, hit
-        # repeatedly while re-testing the same poc-app version. Computed
-        # once and shared (via $GITHUB_ENV) by both build-source.sh calls
-        # below, so one publish run produces one consistent version.
-        run: echo "DEB_REVISION=1+test$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential devscripts debhelper golang-go
 
-      - name: Build source + binary package
+      - name: Build the orig tarball and the .deb
         env:
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
         run: scripts/build-source.sh "${{ inputs.component }}" "${{ inputs.version }}" -b
@@ -75,12 +101,11 @@ jobs:
       - name: Commit the updated changelog
         # build-source.sh bumps packages/<component>/debian/changelog in
         # place from poc-app's own CHANGELOG.md before building, so the
-        # package version and release notes actually track the release.
-        # The concurrency group above doesn't reliably serialize two
-        # workflow_dispatch calls fired within a second or two of each
-        # other (confirmed for real on poc-aur's identical step: both
-        # runs started and ran fully concurrently anyway), so the push
-        # itself has to tolerate the race instead of trusting GitHub's
+        # package version and release notes actually track the release. The
+        # concurrency group does not reliably serialize two workflow_dispatch
+        # calls fired within a second or two of each other (confirmed for
+        # real: both runs started and ran fully concurrently anyway), so the
+        # push itself has to tolerate the race instead of trusting GitHub's
         # scheduler to prevent it.
         run: |
           git config user.name "github-actions[bot]"
@@ -96,10 +121,14 @@ jobs:
           done
           echo "::error::could not push after 5 attempts" && exit 1
 
-      - uses: actions/upload-artifact@v4
+      - name: Keep the orig tarball for the uploads
+        # The one built here is the one every series is uploaded with:
+        # Launchpad rejects a same-named orig whose bytes differ.
+        uses: actions/upload-artifact@v7
         with:
-          name: poc-${{ inputs.component }}_${{ inputs.version }}
-          path: dist/*
+          name: orig-${{ inputs.component }}-${{ inputs.version }}
+          path: dist/poc-${{ inputs.component }}_${{ inputs.version }}.orig.tar.gz
+          if-no-files-found: error
 
       - name: Publish the .deb as a poc-apt release
         # A stable download URL for the callback below, independent of
@@ -137,72 +166,6 @@ jobs:
             --json assets -q ".assets[0].apiUrl")
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
-      - name: Check GPG availability
-        id: gpg
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: |
-          if [ -n "$GPG_PRIVATE_KEY" ] && [ -n "$GPG_PASSPHRASE" ] && [ -n "${{ vars.LAUNCHPAD_PPA }}" ]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::GPG secrets or vars.LAUNCHPAD_PPA unset; built locally only, not uploaded to the PPA"
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Import and unlock GPG key
-        if: steps.gpg.outputs.available == 'true'
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: |
-          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
-          echo test | gpg --batch --yes --passphrase "$GPG_PASSPHRASE" \
-            --pinentry-mode loopback --sign > /dev/null
-
-      - name: Sign and upload the source packages to the PPA
-        id: upload
-        if: steps.gpg.outputs.available == 'true'
-        env:
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
-        run: |
-          set -uo pipefail
-          scripts/build-source.sh "${{ inputs.component }}" "${{ inputs.version }}" -S
-          KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')
-          versions=""
-          failed=""
-          for series in $SERIES; do
-            version="${{ inputs.version }}-${{ env.DEB_REVISION }}~${series}1"
-            changes="dist/poc-${{ inputs.component }}_${version}_source.changes"
-            if ! debsign -k"$KEY_ID" -p"gpg --batch --yes --passphrase $GPG_PASSPHRASE --pinentry-mode loopback" "$changes"; then
-              echo "::error::could not sign the $series upload"
-              failed="${failed} ${series}"
-              continue
-            fi
-            # Launchpad's upload server answers "550 ... internal server
-            # error" now and then, and did to the second of several uploads
-            # sent one after the other (confirmed for real). -f because a
-            # half-sent upload leaves a marker dput would refuse to retry.
-            uploaded=""
-            for attempt in 1 2 3; do
-              if dput -f "${{ vars.LAUNCHPAD_PPA }}" "$changes"; then
-                uploaded=1
-                break
-              fi
-              echo "::warning::upload of $series failed (attempt $attempt/3)"
-              sleep "$((attempt * 20))"
-            done
-            if [ -n "$uploaded" ]; then
-              versions="${versions} ${version}"
-            else
-              failed="${failed} ${series}"
-            fi
-            sleep 15
-          done
-          echo "source_versions=${versions# }" >> "$GITHUB_OUTPUT"
-          echo "failed_series=${failed# }" >> "$GITHUB_OUTPUT"
-
       - name: Report back to poc-app
         # CROSS_REPO_TOKEN is the same fine-grained PAT poc-app uses to
         # trigger this workflow, with Contents (read/write) on poc-app too
@@ -227,49 +190,108 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           JOB_STATUS: ${{ job.status }}
-          PPA: ${{ vars.LAUNCHPAD_PPA }}
-          SOURCE_VERSIONS: ${{ steps.upload.outputs.source_versions }}
-          FAILED_SERIES: ${{ steps.upload.outputs.failed_series }}
         run: |
           {
-            echo "## Package build: ${JOB_STATUS}"
+            echo "## Package: ${JOB_STATUS}"
             echo
             echo "| | |"
             echo "| --- | --- |"
             echo "| Component | \`${{ inputs.component }}\` |"
             echo "| Upstream version | \`${{ inputs.version }}\` |"
-            echo "| Debian version | \`${{ inputs.version }}-${DEB_REVISION}\` |"
+            echo "| Debian revision | \`${DEB_REVISION}\` |"
             echo "| Release | [\`${{ inputs.component }}-v${{ inputs.version }}\`](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${{ inputs.component }}-v${{ inputs.version }}) |"
-            if [ -n "$SOURCE_VERSIONS" ]; then
-              echo "| PPA upload | ${SOURCE_VERSIONS// /<br>} to \`${PPA}\`, built by the launchpad job |"
-            else
-              echo "| PPA upload | skipped (no signing secrets or LAUNCHPAD_PPA) |"
-            fi
-            if [ -n "${FAILED_SERIES:-}" ]; then
-              echo "| Upload failed | ${FAILED_SERIES} |"
-            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Fail when an upload failed
-        # After the summary and the report, so the series that did get
-        # uploaded are still followed by the launchpad job.
-        if: steps.upload.outputs.failed_series != ''
-        env:
-          FAILED_SERIES: ${{ steps.upload.outputs.failed_series }}
+  upload:
+    name: upload (${{ matrix.series }})
+    needs: [plan, package]
+    if: needs.plan.outputs.ppa_upload == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      # One series at a time, and a series that fails does not stop the
+      # others. Launchpad's upload server answers 550 to uploads that overlap.
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        series: ${{ fromJSON(needs.plan.outputs.series) }}
+    env:
+      DEB_REVISION: ${{ needs.plan.outputs.revision }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The changelog entry the package job just committed.
+          ref: main
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: orig-${{ inputs.component }}-${{ inputs.version }}
+          path: orig
+
+      - name: Install build dependencies
         run: |
-          echo "::error::the upload failed for: ${FAILED_SERIES}"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential devscripts debhelper golang-go dput
+
+      - name: Import and unlock the GPG key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          echo test | gpg --batch --yes --passphrase "$GPG_PASSPHRASE" \
+            --pinentry-mode loopback --sign > /dev/null
+
+      - name: Build the source package for the series
+        env:
+          SERIES: ${{ matrix.series }}
+          ARCHS: ${{ needs.plan.outputs.archs }}
+          ORIG_TARBALL: ${{ github.workspace }}/orig/poc-${{ inputs.component }}_${{ inputs.version }}.orig.tar.gz
+        run: scripts/build-source.sh "${{ inputs.component }}" "${{ inputs.version }}" -S
+
+      - name: Sign and upload it to the PPA
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          PPA: ${{ vars.LAUNCHPAD_PPA }}
+        run: |
+          set -euo pipefail
+          KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')
+          version="${{ inputs.version }}-${DEB_REVISION}~${{ matrix.series }}1"
+          changes="dist/poc-${{ inputs.component }}_${version}_source.changes"
+          debsign -k"$KEY_ID" -p"gpg --batch --yes --passphrase $GPG_PASSPHRASE --pinentry-mode loopback" "$changes"
+          # Launchpad's upload server answers "550 ... internal server error"
+          # now and then, and to uploads that follow another too closely
+          # (confirmed for real, for several minutes). -f because a half-sent
+          # upload leaves a marker dput would refuse to retry.
+          for attempt in 1 2 3 4 5; do
+            if dput -f "$PPA" "$changes"; then
+              echo "$version" > "uploaded-${{ matrix.series }}"
+              exit 0
+            fi
+            echo "::warning::upload of ${{ matrix.series }} failed (attempt $attempt/5)"
+            sleep "$((attempt * 30))"
+          done
+          echo "::error::could not upload ${{ matrix.series }}"
           exit 1
 
-  # Launchpad builds the uploaded source package on its own, minutes later and
-  # possibly failing: the job above only knows the upload went through. This
-  # one follows the build, in a job of its own so that the long wait does not
-  # hold the concurrency group the changelog commits are serialised by.
+      - name: Remember what was uploaded
+        uses: actions/upload-artifact@v7
+        with:
+          name: uploaded-${{ matrix.series }}
+          path: uploaded-${{ matrix.series }}
+          if-no-files-found: error
+
+  # Launchpad builds the uploaded source packages on its own, minutes later and
+  # possibly failing: the jobs above only know the uploads went through. This
+  # one follows the builds of every series and architecture.
   launchpad:
     name: launchpad build (${{ inputs.component }} ${{ inputs.version }})
-    needs: build
-    # Also after a failed build job: it fails when only some series could be
-    # uploaded, and the ones that were still have builds to follow.
-    if: ${{ !cancelled() && needs.build.outputs.source_versions != '' }}
+    needs: [plan, package, upload]
+    # Also when some uploads failed: the series that did go through still
+    # have builds to follow.
+    if: ${{ !cancelled() && needs.plan.outputs.ppa_upload == 'true' && needs.package.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -279,12 +301,38 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Wait for the Launchpad build
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: uploaded-*
+          path: uploaded
+          merge-multiple: true
+
+      - name: List what was uploaded
+        id: uploaded
+        run: |
+          versions=$(cat uploaded/uploaded-* 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Uploads: ${{ needs.upload.result }}"
+            echo
+            echo "Series asked for: $(echo '${{ needs.plan.outputs.series }}' | jq -r 'join(", ")')"
+            echo "Architectures: ${{ needs.plan.outputs.archs }}"
+            echo
+            if [ -n "$versions" ]; then
+              echo "Uploaded: ${versions// /, }"
+            else
+              echo "Nothing was uploaded."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for the Launchpad builds
         id: build
+        if: steps.uploaded.outputs.versions != ''
         env:
           PPA: ${{ vars.LAUNCHPAD_PPA }}
           SOURCE: poc-${{ inputs.component }}
-          VERSIONS: ${{ needs.build.outputs.source_versions }}
+          VERSIONS: ${{ steps.uploaded.outputs.versions }}
         run: scripts/launchpad-build-status.sh
 
       - name: Tell poc-app how the build ended
@@ -294,7 +342,9 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
-          STATE: ${{ steps.build.outputs.state || 'failure' }}
+          # A series that could not be uploaded is a failure, whatever the
+          # builds of the others say.
+          STATE: ${{ needs.upload.result != 'success' && 'failure' || steps.build.outputs.state || 'failure' }}
           BUILD_URL: ${{ steps.build.outputs.build_url }}
           LOG_URL: ${{ steps.build.outputs.log_url }}
         run: |
@@ -311,11 +361,12 @@ jobs:
             -f "client_payload[url]=$BUILD_URL" \
             -f "client_payload[log_url]=$LOG_URL"
 
-      - name: Fail when the build did not succeed
-        if: steps.build.outputs.state != 'success'
+      - name: Fail when something did not go through
+        if: ${{ needs.upload.result != 'success' || steps.build.outputs.state != 'success' }}
         env:
+          UPLOADS: ${{ needs.upload.result }}
           STATE: ${{ steps.build.outputs.state }}
           BUILD_URL: ${{ steps.build.outputs.build_url }}
         run: |
-          echo "::error::Launchpad build ${STATE:-did not report}: ${BUILD_URL}"
+          echo "::error::uploads ${UPLOADS}, Launchpad build ${STATE:-not followed}: ${BUILD_URL}"
           exit 1
