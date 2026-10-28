@@ -1,3 +1,9 @@
+poc-pinger (0.3.0-1+test1793186661) noble; urgency=medium
+
+  * **pinger**: print the version with --version (`b17db79`)
+
+ -- Chris <goabonga@pm.me>  Wed, 28 Oct 2026 11:24:52 +0000
+
 poc-pinger (0.2.1-1+test1793147572) noble; urgency=medium
 
   * Track `go-modules` `0.1.0`
