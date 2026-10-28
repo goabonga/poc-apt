@@ -13,7 +13,9 @@
 #             spaces, e.g. "0.3.0-1+t1~noble1 0.3.0-1+t1~jammy1"
 #             (VERSION, a single one, is accepted too)
 #
-# Uses the public Launchpad API, so it needs no credentials: each published
+# Uses the public Launchpad API, so it needs no credentials, its devel version:
+# the stable one answers getBuilds with states that stay stale (a build that was
+# over for 25 minutes still read "Currently building"). Each published
 # source is looked up first (an upload takes a few minutes to be accepted and
 # published), then the builds of all of them - one per series and
 # architecture - are polled until every one reached a final state.
@@ -46,7 +48,7 @@ esac
 owner="${PPA#ppa:}"
 name="${owner#*/}"
 owner="${owner%%/*}"
-archive="https://api.launchpad.net/1.0/~${owner}/+archive/ubuntu/${name}"
+archive="https://api.launchpad.net/devel/~${owner}/+archive/ubuntu/${name}"
 
 # A final state is one that will not change on its own. "Dependency wait" and
 # every "needs/currently/uploading" state keep polling.
