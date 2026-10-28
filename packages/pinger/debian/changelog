@@ -1,3 +1,9 @@
+poc-pinger (0.4.0-1+test1793194397) noble; urgency=medium
+
+  * **pinger**: print its usage with --help (`8f733e1`)
+
+ -- Chris <goabonga@pm.me>  Wed, 28 Oct 2026 13:34:15 +0000
+
 poc-pinger (0.4.0-1+test1793192747) noble; urgency=medium
 
   * **pinger**: print its usage with --help (`8f733e1`)
