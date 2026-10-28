@@ -334,6 +334,17 @@ jobs:
           VERSIONS: ${{ steps.uploaded.outputs.version }}
         run: scripts/launchpad-build-status.sh
 
+      - name: Follow the publication of the binaries
+        id: published
+        # A build that succeeded is not installable yet, and its binaries do
+        # not even exist yet: Launchpad creates them in a batch, minutes
+        # after the build is over (the ones of a run appeared 36 to 43
+        # minutes after their source).
+        if: ${{ !cancelled() && steps.build.outputs.state == 'success' }}
+        env:
+          VERSION: ${{ steps.uploaded.outputs.version }}
+        run: scripts/launchpad-published.sh
+
       - name: Collect the packages Launchpad built
         id: debs
         if: ${{ !cancelled() && steps.uploaded.outputs.version != '' }}
@@ -361,14 +372,6 @@ jobs:
             -f "client_payload[series]=${{ matrix.series }}" \
             -f "client_payload[package]=poc-${{ inputs.component }}" \
             -f "client_payload[debs]=$DEBS"
-
-      - name: Follow the publication of the binaries
-        id: published
-        # A build that succeeded is not installable yet.
-        if: ${{ !cancelled() && steps.build.outputs.state == 'success' }}
-        env:
-          VERSION: ${{ steps.uploaded.outputs.version }}
-        run: scripts/launchpad-published.sh
 
       - name: Write what happened to the series
         id: result
