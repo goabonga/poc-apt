@@ -1,3 +1,9 @@
+poc-hello (0.3.0-1+test1793186573) noble; urgency=medium
+
+  * **hello**: print the version with --version (`ac3a904`)
+
+ -- Chris <goabonga@pm.me>  Wed, 28 Oct 2026 11:23:21 +0000
+
 poc-hello (0.2.1-1+test1793147450) noble; urgency=medium
 
   * Track `go-modules` `0.1.0`
