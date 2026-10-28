@@ -170,6 +170,8 @@ jobs:
             -f "client_payload[component]=${{ inputs.component }}" \
             -f "client_payload[version]=${{ inputs.version }}" \
             -f "client_payload[kind]=apt" \
+            -f "client_payload[package]=poc-${{ inputs.component }}" \
+            -f "client_payload[ppa]=${{ vars.LAUNCHPAD_PPA }}" \
             -f "client_payload[url]=${{ steps.github_release.outputs.url }}"
 
       - name: Job summary
