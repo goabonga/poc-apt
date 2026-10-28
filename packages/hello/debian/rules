@@ -9,11 +9,15 @@ export GOFLAGS=-mod=vendor
 # Go's default build cache under it cannot be created.
 export GOCACHE=$(CURDIR)/.gocache
 
+# Series whose default Go is older than the 1.22 go.mod asks for (jammy) get
+# it from the golang-1.22-go package, which installs outside the PATH.
+GO := $(shell test -x /usr/lib/go-1.22/bin/go && echo /usr/lib/go-1.22/bin/go || echo go)
+
 %:
 	dh $@
 
 override_dh_auto_build:
-	go build -trimpath -ldflags='-s -w' -o poc-hello ./cmd/hello
+	$(GO) build -trimpath -ldflags='-s -w' -o poc-hello ./cmd/hello
 
 override_dh_auto_install:
 	install -Dm755 poc-hello debian/poc-hello/usr/bin/poc-hello

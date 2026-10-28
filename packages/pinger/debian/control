@@ -2,7 +2,7 @@ Source: poc-pinger
 Section: utils
 Priority: optional
 Maintainer: Chris <goabonga@pm.me>
-Build-Depends: debhelper-compat (= 13), golang-go (>= 2:1.22~)
+Build-Depends: debhelper-compat (= 13), golang-go (>= 2:1.22~) | golang-1.22-go
 Standards-Version: 4.6.2
 Homepage: https://github.com/goabonga/poc-app
 
