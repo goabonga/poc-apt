@@ -329,14 +329,81 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Wait for the Launchpad builds
-        id: build
-        if: steps.uploaded.outputs.versions != ''
+      # A step's summary is uploaded when the step ends and cannot be edited
+      # afterwards, so progress shows as several steps: the first five follow
+      # the builds for five minutes each and write a snapshot of them, the
+      # last one until they are over (or the time is up). A step that finds the
+      # builds over does nothing.
+      - name: Follow the Launchpad builds (1/6)
+        if: ${{ !cancelled() && steps.uploaded.outputs.versions != '' }}
         env:
           PPA: ${{ vars.LAUNCHPAD_PPA }}
           SOURCE: poc-${{ inputs.component }}
           VERSIONS: ${{ steps.uploaded.outputs.versions }}
+          STATE_FILE: ${{ runner.temp }}/launchpad-state
+          SLICE: "300"
         run: scripts/launchpad-build-status.sh
+
+      - name: Follow the Launchpad builds (2/6)
+        if: ${{ !cancelled() && steps.uploaded.outputs.versions != '' }}
+        env:
+          PPA: ${{ vars.LAUNCHPAD_PPA }}
+          SOURCE: poc-${{ inputs.component }}
+          VERSIONS: ${{ steps.uploaded.outputs.versions }}
+          STATE_FILE: ${{ runner.temp }}/launchpad-state
+          SLICE: "300"
+        run: scripts/launchpad-build-status.sh
+
+      - name: Follow the Launchpad builds (3/6)
+        if: ${{ !cancelled() && steps.uploaded.outputs.versions != '' }}
+        env:
+          PPA: ${{ vars.LAUNCHPAD_PPA }}
+          SOURCE: poc-${{ inputs.component }}
+          VERSIONS: ${{ steps.uploaded.outputs.versions }}
+          STATE_FILE: ${{ runner.temp }}/launchpad-state
+          SLICE: "300"
+        run: scripts/launchpad-build-status.sh
+
+      - name: Follow the Launchpad builds (4/6)
+        if: ${{ !cancelled() && steps.uploaded.outputs.versions != '' }}
+        env:
+          PPA: ${{ vars.LAUNCHPAD_PPA }}
+          SOURCE: poc-${{ inputs.component }}
+          VERSIONS: ${{ steps.uploaded.outputs.versions }}
+          STATE_FILE: ${{ runner.temp }}/launchpad-state
+          SLICE: "300"
+        run: scripts/launchpad-build-status.sh
+
+      - name: Follow the Launchpad builds (5/6)
+        if: ${{ !cancelled() && steps.uploaded.outputs.versions != '' }}
+        env:
+          PPA: ${{ vars.LAUNCHPAD_PPA }}
+          SOURCE: poc-${{ inputs.component }}
+          VERSIONS: ${{ steps.uploaded.outputs.versions }}
+          STATE_FILE: ${{ runner.temp }}/launchpad-state
+          SLICE: "300"
+        run: scripts/launchpad-build-status.sh
+
+      - name: Follow the Launchpad builds (6/6)
+        if: ${{ !cancelled() && steps.uploaded.outputs.versions != '' }}
+        env:
+          PPA: ${{ vars.LAUNCHPAD_PPA }}
+          SOURCE: poc-${{ inputs.component }}
+          VERSIONS: ${{ steps.uploaded.outputs.versions }}
+          STATE_FILE: ${{ runner.temp }}/launchpad-state
+          SLICE: "0"
+        run: scripts/launchpad-build-status.sh
+
+      - name: Settle the outcome of the builds
+        id: build
+        if: ${{ !cancelled() && steps.uploaded.outputs.versions != '' }}
+        env:
+          STATE_FILE: ${{ runner.temp }}/launchpad-state
+        run: |
+          # The last slice always writes it; a crashed step may not have.
+          for key in state build_url log_url; do
+            echo "$key=$(grep "^$key=" "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)" >> "$GITHUB_OUTPUT"
+          done
 
       - name: Collect the packages Launchpad built
         id: debs
