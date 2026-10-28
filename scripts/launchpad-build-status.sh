@@ -34,6 +34,10 @@ if [ "${#versions[@]}" -eq 0 ]; then
 fi
 INTERVAL="${INTERVAL:-30}"
 LIMIT="${LIMIT:-5400}"
+# An upload takes a few minutes to be accepted and published. One that is not
+# after this long was most likely rejected, which Launchpad only tells by
+# email: it is reported as such and no longer waited for.
+PUBLISH_LIMIT="${PUBLISH_LIMIT:-900}"
 
 case "$PPA" in
   ppa:*/*) ;;
@@ -51,7 +55,9 @@ FINAL='["Successfully built","Failed to build","Failed to upload","Chroot proble
 output() { [ -z "${GITHUB_OUTPUT:-}" ] || echo "$1=$2" >> "$GITHUB_OUTPUT"; }
 
 deadline=$((SECONDS + LIMIT))
+started=$SECONDS
 declare -A links=()
+rejected=()
 builds='[]'
 ready=0
 
@@ -69,8 +75,16 @@ while [ "$SECONDS" -lt "$deadline" ]; do
         | jq -r '.entries[0].self_link // empty')
     fi
     if [ -z "${links[$version]}" ]; then
-      echo "waiting for $SOURCE $version to be published"
-      ready=0
+      if [ $((SECONDS - started)) -ge "$PUBLISH_LIMIT" ]; then
+        case " ${rejected[*]:-} " in
+          *" $version "*) ;;
+          *) echo "::warning::$SOURCE $version was not published after $((PUBLISH_LIMIT / 60)) minutes, the upload was probably rejected"
+             rejected+=("$version") ;;
+        esac
+      else
+        echo "waiting for $SOURCE $version to be published"
+        ready=0
+      fi
       continue
     fi
     found=$(curl -fsS "${links[$version]}?ws.op=getBuilds" | jq -c '.entries')
@@ -89,9 +103,9 @@ done
 count=$(jq length <<<"$builds")
 pending=$(jq --argjson final "$FINAL" '[.[] | select(.buildstate | IN($final[]) | not)] | length' <<<"$builds")
 failed=$(jq '[.[] | select(.buildstate != "Successfully built")] | length' <<<"$builds")
-if [ "$ready" -ne 1 ] || [ "$count" -eq 0 ] || [ "$pending" -gt 0 ]; then
+if [ "$ready" -ne 1 ] || [ "$pending" -gt 0 ] || { [ "$count" -eq 0 ] && [ "${#rejected[@]}" -eq 0 ]; }; then
   state=timeout
-elif [ "$failed" -eq 0 ]; then
+elif [ "$failed" -eq 0 ] && [ "${#rejected[@]}" -eq 0 ]; then
   state=success
 else
   state=failure
@@ -102,6 +116,11 @@ fi
 pick=$(jq -c 'map(select(.buildstate != "Successfully built"))[0] // .[0] // {}' <<<"$builds")
 build_url=$(jq -r '.web_link // empty' <<<"$pick")
 log_url=$(jq -r '.build_log_url // empty' <<<"$pick")
+# Only rejected uploads: no build to point at, the PPA is the place to look.
+if [ "$failed" -eq 0 ] && [ "${#rejected[@]}" -gt 0 ]; then
+  build_url=""
+  log_url=""
+fi
 [ -n "$build_url" ] || build_url="https://launchpad.net/~${owner}/+archive/ubuntu/${name}/+packages"
 
 output state "$state"
@@ -112,11 +131,17 @@ echo "$SOURCE ${versions[*]}: $state"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   listed=""
   for version in "${versions[@]}"; do listed+="\`$version\` "; done
+  missing=""
+  for version in "${rejected[@]}"; do missing+="\`$version\` "; done
   {
     echo "## Launchpad build: $state"
     echo
     echo "\`$SOURCE\` on \`$PPA\`: ${listed% }"
     echo
+    if [ "${#rejected[@]}" -gt 0 ]; then
+      echo "Not published by Launchpad, the upload was probably rejected (see the email it sent): ${missing% }"
+      echo
+    fi
     if [ "$count" -eq 0 ]; then
       echo "No build was published before the timeout."
     else
