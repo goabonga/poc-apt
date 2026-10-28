@@ -38,8 +38,7 @@ on:
 # A run holds this group from its plan to its last build, so that two
 # components never commit their changelog at the same time (the second push
 # would be rejected as non-fast-forward) nor upload to Launchpad at the same
-# time (whose upload server answers 550 to overlapping uploads, confirmed for
-# real). poc-app dispatches every bumped component at roughly the same time:
+# time. poc-app dispatches every bumped component at roughly the same time:
 # the second one waits for the first.
 concurrency:
   group: publish-${{ github.repository }}
@@ -177,9 +176,11 @@ jobs:
     permissions:
       contents: read
     strategy:
-      # One series at a time, and a series that fails does not stop the
-      # others. Launchpad's upload server answers 550 to uploads that overlap.
-      max-parallel: 1
+      # All the series at once, and a series that fails does not stop the
+      # others. Launchpad's upload server answered 550 to uploads that
+      # followed each other closely, so each upload is retried with a growing
+      # pause.
+      max-parallel: 4
       fail-fast: false
       matrix:
         series: ${{ fromJSON(needs.plan.outputs.series) }}
