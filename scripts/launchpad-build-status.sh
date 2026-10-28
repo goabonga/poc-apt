@@ -27,6 +27,12 @@
 
 set -euo pipefail
 
+# Launchpad's anonymous API sits behind a cache that answers the same request
+# the same way for a long time, an empty answer included (X-Cache: HIT, a
+# growing Age): a source created minutes ago read as missing, and a build
+# that was over for 25 minutes as still building. It honours no-cache.
+lp_curl() { curl -fsS -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$@"; }
+
 : "${PPA:?PPA is required, e.g. ppa:goabonga/poc}"
 : "${SOURCE:?SOURCE is required}"
 read -ra versions <<<"${VERSIONS:-${VERSION:-}}"
@@ -69,7 +75,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   for version in "${versions[@]}"; do
     if [ -z "${links[$version]:-}" ]; then
       # The version holds a "+" and a "~", so it has to be URL-encoded.
-      links[$version]=$(curl -fsS -G "$archive" \
+      links[$version]=$(lp_curl -G "$archive" \
         --data-urlencode "ws.op=getPublishedSources" \
         --data-urlencode "source_name=$SOURCE" \
         --data-urlencode "exact_match=true" \
@@ -89,7 +95,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
       fi
       continue
     fi
-    found=$(curl -fsS "${links[$version]}?ws.op=getBuilds" | jq -c '.entries')
+    found=$(lp_curl "${links[$version]}?ws.op=getBuilds" | jq -c '.entries')
     [ "$(jq length <<<"$found")" -gt 0 ] || ready=0
     builds=$(jq -c -s 'add' <<<"$builds $found")
   done

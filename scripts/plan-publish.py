@@ -53,7 +53,12 @@ def series_problem(series: str) -> str | None:
     if not SERIES.fullmatch(series):
         return f"'{series}' is not a series name"
     try:
-        with urllib.request.urlopen(f"{LAUNCHPAD}/ubuntu/{series}", timeout=30) as response:
+        # Launchpad's API is behind a cache that keeps an answer for a long time.
+        request = urllib.request.Request(
+            f"{LAUNCHPAD}/ubuntu/{series}",
+            headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
             details = json.load(response)
     except urllib.error.HTTPError as error:
         if error.code == 404:

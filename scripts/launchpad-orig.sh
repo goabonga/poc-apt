@@ -23,6 +23,12 @@
 
 set -euo pipefail
 
+# Launchpad's anonymous API sits behind a cache that answers the same request
+# the same way for a long time, an empty answer included (X-Cache: HIT, a
+# growing Age): a source created minutes ago read as missing, and a build
+# that was over for 25 minutes as still building. It honours no-cache.
+lp_curl() { curl -fsS -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$@"; }
+
 : "${PPA:?PPA is required, e.g. ppa:goabonga/poc}"
 : "${SOURCE:?SOURCE is required}"
 : "${VERSION:?VERSION is required}"
@@ -39,7 +45,7 @@ archive="https://api.launchpad.net/devel/~${owner}/+archive/ubuntu/${name}"
 
 # Any published source of that upstream version carries the orig tarball
 # ("<version>-<revision>"), whatever its series.
-source_link=$(curl -fsS -G "$archive" \
+source_link=$(lp_curl -G "$archive" \
   --data-urlencode "ws.op=getPublishedSources" \
   --data-urlencode "source_name=$SOURCE" \
   --data-urlencode "exact_match=true" \
@@ -50,7 +56,7 @@ if [ -z "$source_link" ]; then
   exit 0
 fi
 
-url=$(curl -fsS -G "$source_link" --data-urlencode "ws.op=sourceFileUrls" \
+url=$(lp_curl -G "$source_link" --data-urlencode "ws.op=sourceFileUrls" \
   | jq -r --arg orig "${SOURCE}_${VERSION}.orig.tar.gz" '.[] | select(endswith($orig))' | head -1)
 if [ -z "$url" ]; then
   echo "::warning::$SOURCE $VERSION is in the PPA without an orig tarball to reuse" >&2
