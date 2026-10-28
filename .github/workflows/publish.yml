@@ -3,7 +3,9 @@ name: publish
 # Builds the Debian source + binary package for one poc-app component and
 # version, publishes the .deb as a poc-apt release (a stable URL regardless
 # of PPA configuration), uploads the source package to the Launchpad PPA
-# when GPG signing secrets are configured, and reports back to poc-app.
+# when GPG signing secrets are configured, waits for the Launchpad build, and
+# reports back to poc-app, both that the package is available and how the
+# Launchpad build ended.
 # Can be run by hand, but is normally dispatched by poc-app's release
 # workflow right after it tags a release.
 
@@ -36,6 +38,10 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    outputs:
+      # The full Debian version uploaded to the PPA; empty when nothing was
+      # uploaded, which skips the Launchpad job.
+      source_version: ${{ steps.upload.outputs.source_version }}
     steps:
       - uses: actions/checkout@v7
 
@@ -134,6 +140,7 @@ jobs:
             --pinentry-mode loopback --sign > /dev/null
 
       - name: Sign and upload source package to the PPA
+        id: upload
         if: steps.gpg.outputs.available == 'true'
         env:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
@@ -145,6 +152,7 @@ jobs:
             dist/poc-${{ inputs.component }}_${{ inputs.version }}-${{ env.DEB_REVISION }}_source.changes
           dput "${{ vars.LAUNCHPAD_PPA }}" \
             dist/poc-${{ inputs.component }}_${{ inputs.version }}-${{ env.DEB_REVISION }}_source.changes
+          echo "source_version=${{ inputs.version }}-${{ env.DEB_REVISION }}" >> "$GITHUB_OUTPUT"
 
       - name: Report back to poc-app
         # CROSS_REPO_TOKEN is the same fine-grained PAT poc-app uses to
@@ -163,3 +171,61 @@ jobs:
             -f "client_payload[version]=${{ inputs.version }}" \
             -f "client_payload[kind]=apt" \
             -f "client_payload[url]=${{ steps.github_release.outputs.url }}"
+
+  # Launchpad builds the uploaded source package on its own, minutes later and
+  # possibly failing: the job above only knows the upload went through. This
+  # one follows the build, in a job of its own so that the long wait does not
+  # hold the concurrency group the changelog commits are serialised by.
+  launchpad:
+    name: launchpad build (${{ inputs.component }} ${{ inputs.version }})
+    needs: build
+    if: needs.build.outputs.source_version != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Wait for the Launchpad build
+        id: build
+        env:
+          PPA: ${{ vars.LAUNCHPAD_PPA }}
+          SOURCE: poc-${{ inputs.component }}
+          VERSION: ${{ needs.build.outputs.source_version }}
+        run: scripts/launchpad-build-status.sh
+
+      - name: Tell poc-app how the build ended
+        # Sent whatever the outcome, so poc-app learns about a failure too.
+        # The same fine-grained PAT as above, with Contents (read/write) on
+        # poc-app for the repository_dispatch.
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+          STATE: ${{ steps.build.outputs.state || 'failure' }}
+          BUILD_URL: ${{ steps.build.outputs.build_url }}
+          LOG_URL: ${{ steps.build.outputs.log_url }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::secrets.CROSS_REPO_TOKEN unset; poc-app was not notified"
+            exit 0
+          fi
+          gh api repos/goabonga/poc-app/dispatches \
+            -f event_type=package-build \
+            -f "client_payload[component]=${{ inputs.component }}" \
+            -f "client_payload[version]=${{ inputs.version }}" \
+            -f "client_payload[kind]=apt" \
+            -f "client_payload[status]=$STATE" \
+            -f "client_payload[url]=$BUILD_URL" \
+            -f "client_payload[log_url]=$LOG_URL"
+
+      - name: Fail when the build did not succeed
+        if: steps.build.outputs.state != 'success'
+        env:
+          STATE: ${{ steps.build.outputs.state }}
+          BUILD_URL: ${{ steps.build.outputs.build_url }}
+        run: |
+          echo "::error::Launchpad build ${STATE:-did not report}: ${BUILD_URL}"
+          exit 1
