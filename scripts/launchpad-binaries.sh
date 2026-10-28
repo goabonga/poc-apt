@@ -20,6 +20,12 @@
 
 set -euo pipefail
 
+# Launchpad's anonymous API sits behind a cache that answers the same request
+# the same way for a long time, an empty answer included (X-Cache: HIT, a
+# growing Age): a source created minutes ago read as missing, and a build
+# that was over for 25 minutes as still building. It honours no-cache.
+lp_curl() { curl -fsS -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$@"; }
+
 : "${PPA:?PPA is required, e.g. ppa:goabonga/poc}"
 : "${SOURCE:?SOURCE is required}"
 read -ra versions <<<"${VERSIONS:-}"
@@ -35,7 +41,7 @@ archive="https://api.launchpad.net/devel/~${owner}/+archive/ubuntu/${name}"
 
 debs='[]'
 for version in "${versions[@]}"; do
-  source_link=$(curl -fsS -G "$archive" \
+  source_link=$(lp_curl -G "$archive" \
     --data-urlencode "ws.op=getPublishedSources" \
     --data-urlencode "source_name=$SOURCE" \
     --data-urlencode "exact_match=true" \
@@ -47,7 +53,7 @@ for version in "${versions[@]}"; do
   fi
   while read -r binary series arch; do
     [ -n "$binary" ] || continue
-    files=$(curl -fsS -G "$binary" \
+    files=$(lp_curl -G "$binary" \
       --data-urlencode "ws.op=binaryFileUrls" \
       --data-urlencode "include_meta=true")
     # Only the .deb: a build also publishes -dbgsym.ddeb files.
@@ -55,7 +61,7 @@ for version in "${versions[@]}"; do
       '[.[] | select(.url | endswith(".deb")) | {series: $series, arch: $arch, url: .url, sha256: .sha256}]' \
       <<<"$files")
     debs=$(jq -c -s 'add' <<<"$debs $found")
-  done < <(curl -fsS "$source_link?ws.op=getPublishedBinaries" \
+  done < <(lp_curl "$source_link?ws.op=getPublishedBinaries" \
     | jq -r '.entries[] | [.self_link, (.distro_arch_series_link | split("/")[-2]), (.distro_arch_series_link | split("/")[-1])] | @tsv')
 done
 

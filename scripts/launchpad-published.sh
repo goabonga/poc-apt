@@ -22,6 +22,12 @@
 
 set -euo pipefail
 
+# Launchpad's anonymous API sits behind a cache that answers the same request
+# the same way for a long time, an empty answer included (X-Cache: HIT, a
+# growing Age): a source created minutes ago read as missing, and a build
+# that was over for 25 minutes as still building. It honours no-cache.
+lp_curl() { curl -fsS -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$@"; }
+
 : "${PPA:?PPA is required, e.g. ppa:goabonga/poc}"
 : "${SOURCE:?SOURCE is required}"
 : "${VERSION:?VERSION is required}"
@@ -42,14 +48,14 @@ output() { [ -z "${GITHUB_OUTPUT:-}" ] || echo "$1=$2" >> "$GITHUB_OUTPUT"; }
 deadline=$(($(date +%s) + LIMIT))
 published=false
 while [ "$(date +%s)" -lt "$deadline" ]; do
-  source_link=$(curl -fsS -G "$archive" \
+  source_link=$(lp_curl -G "$archive" \
     --data-urlencode "ws.op=getPublishedSources" \
     --data-urlencode "source_name=$SOURCE" \
     --data-urlencode "exact_match=true" \
     --data-urlencode "version=$VERSION" \
     | jq -r '.entries[0].self_link // empty')
   if [ -n "$source_link" ]; then
-    statuses=$(curl -fsS "$source_link?ws.op=getPublishedBinaries" | jq -r '[.entries[].status] | sort | join(" ")')
+    statuses=$(lp_curl "$source_link?ws.op=getPublishedBinaries" | jq -r '[.entries[].status] | sort | join(" ")')
     echo "binaries: ${statuses:-none yet}"
     # A Superseded or Obsolete binary was published and a newer version
     # replaced it: it is not waited for.
