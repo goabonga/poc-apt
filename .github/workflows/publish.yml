@@ -35,13 +35,17 @@ on:
         required: false
         type: string
 
-# A run holds this group from its plan to its last build, so that two
-# components never commit their changelog at the same time (the second push
-# would be rejected as non-fast-forward) nor upload to Launchpad at the same
-# time. poc-app dispatches every bumped component at roughly the same time:
-# the second one waits for the first.
+# A run holds this group from its plan to its last build, so that two calls
+# for the same component never overlap: they would commit the same changelog
+# and upload the same package. Different components do not wait for one
+# another: poc-app dispatches every bumped component at roughly the same time,
+# and they touch different files (the changelog commit rebases and retries
+# when the other component's push got in first).
+#
+# A call that arrives while another one runs and another one already waits
+# replaces the one that waited.
 concurrency:
-  group: publish-${{ github.repository }}
+  group: publish-${{ github.repository }}-${{ inputs.component }}
 
 env:
   DEFAULT_SERIES: jammy noble resolute stonking
