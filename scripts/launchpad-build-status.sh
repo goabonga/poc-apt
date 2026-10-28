@@ -17,6 +17,11 @@
 # source is looked up first (an upload takes a few minutes to be accepted and
 # published), then the builds of all of them - one per series and
 # architecture - are polled until every one reached a final state.
+#
+# Besides the state, it writes the builds themselves, one entry per series and
+# architecture, as {arch, state, url, log_url}, to
+#   builds=<JSON array>
+# so that what failed, and where its log is, can be reported.
 
 set -euo pipefail
 
@@ -121,6 +126,8 @@ fi
 output state "$state"
 output build_url "$build_url"
 output log_url "$log_url"
+output builds "$(jq -c 'map({arch: .arch_tag, state: .buildstate, url: .web_link, log_url: (.build_log_url // "")})' <<<"$builds")"
+
 echo "$SOURCE ${versions[*]}: $state"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   listed=""
