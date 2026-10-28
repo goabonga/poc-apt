@@ -17,21 +17,6 @@
 # source is looked up first (an upload takes a few minutes to be accepted and
 # published), then the builds of all of them - one per series and
 # architecture - are polled until every one reached a final state.
-#
-# A step's job summary is uploaded when the step ends and cannot be edited
-# afterwards, so to show progress the wait is cut in slices, one step each:
-#   SLICE       seconds to follow the builds for in this step before writing a
-#               snapshot of them to the summary and returning (0: until they
-#               are all over)
-#   STATE_FILE  where the steps pass what they know to the next one (the time
-#               the wait started, and once the builds are over, the outcome);
-#               a step that finds the outcome there does nothing
-# The state is "pending" after a slice that did not see the end. Never fails on a failed build: it writes
-#   state=success|failure|timeout
-#   build_url=<Launchpad build page>
-#   log_url=<build log>
-# to $GITHUB_OUTPUT and a table to $GITHUB_STEP_SUMMARY, and the workflow
-# decides what to do with them.
 
 set -euo pipefail
 
@@ -44,8 +29,6 @@ if [ "${#versions[@]}" -eq 0 ]; then
 fi
 INTERVAL="${INTERVAL:-30}"
 LIMIT="${LIMIT:-5400}"
-SLICE="${SLICE:-0}"
-STATE_FILE="${STATE_FILE:-}"
 # An upload takes a few minutes to be accepted and published. One that is not
 # after this long was most likely rejected, which Launchpad only tells by
 # email: it is reported as such and no longer waited for.
@@ -66,19 +49,8 @@ FINAL='["Successfully built","Failed to build","Failed to upload","Chroot proble
 
 output() { [ -z "${GITHUB_OUTPUT:-}" ] || echo "$1=$2" >> "$GITHUB_OUTPUT"; }
 
-# What an earlier slice settled or started: nothing to do once the builds are
-# over, and the wait keeps its own clock across the slices.
-if [ -n "$STATE_FILE" ] && grep -qx 'done=true' "$STATE_FILE" 2>/dev/null; then
-  echo "the builds are over already: $(grep '^state=' "$STATE_FILE")"
-  exit 0
-fi
 started=$(date +%s)
-if [ -n "$STATE_FILE" ] && grep -q '^started=' "$STATE_FILE" 2>/dev/null; then
-  started=$(grep '^started=' "$STATE_FILE" | cut -d= -f2)
-fi
-slice_end=$(($(date +%s) + SLICE))
 deadline=$((started + LIMIT))
-sliced=0
 declare -A links=()
 rejected=()
 builds='[]'
@@ -120,10 +92,6 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   if [ "$ready" -eq 1 ] && [ "$pending" -eq 0 ]; then
     break
   fi
-  if [ "$SLICE" -gt 0 ] && [ "$(date +%s)" -ge "$slice_end" ]; then
-    sliced=1
-    break
-  fi
   sleep "$INTERVAL"
 done
 
@@ -131,8 +99,7 @@ count=$(jq length <<<"$builds")
 pending=$(jq --argjson final "$FINAL" '[.[] | select(.buildstate | IN($final[]) | not)] | length' <<<"$builds")
 failed=$(jq '[.[] | select(.buildstate != "Successfully built")] | length' <<<"$builds")
 if [ "$ready" -ne 1 ] || [ "$pending" -gt 0 ] || { [ "$count" -eq 0 ] && [ "${#rejected[@]}" -eq 0 ]; }; then
-  # Not over: another slice follows, or the time is up.
-  if [ "$sliced" -eq 1 ]; then state=pending; else state=timeout; fi
+  state=timeout
 elif [ "$failed" -eq 0 ] && [ "${#rejected[@]}" -eq 0 ]; then
   state=success
 else
@@ -154,16 +121,6 @@ fi
 output state "$state"
 output build_url "$build_url"
 output log_url "$log_url"
-if [ -n "$STATE_FILE" ]; then
-  {
-    echo "started=$started"
-    echo "state=$state"
-    echo "build_url=$build_url"
-    echo "log_url=$log_url"
-    [ "$state" = pending ] && echo "done=false" || echo "done=true"
-  } > "$STATE_FILE"
-fi
-
 echo "$SOURCE ${versions[*]}: $state"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   listed=""
@@ -173,11 +130,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   # What the builds are doing, for a snapshot: "3 Currently building".
   progress=$(jq -r 'group_by(.buildstate) | map("\(length) \(.[0].buildstate)") | join(", ")' <<<"$builds")
   {
-    if [ "$state" = pending ]; then
-      echo "## Launchpad builds: in progress ($(date -u +%H:%M) UTC)"
-    else
-      echo "## Launchpad build: $state"
-    fi
+    echo "## Launchpad build: $state"
     echo
     [ -z "$progress" ] || echo "Builds: $progress"
     [ -z "$progress" ] || echo
