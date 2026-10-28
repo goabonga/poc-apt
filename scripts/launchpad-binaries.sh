@@ -24,7 +24,11 @@ set -euo pipefail
 # the same way for a long time, an empty answer included (X-Cache: HIT, a
 # growing Age): a source created minutes ago read as missing, and a build
 # that was over for 25 minutes as still building. It honours no-cache.
-lp_curl() { curl -fsS -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$@"; }
+# Its 5xx answers (a 503 now and then) are transient: they are retried.
+lp_curl() {
+  curl -fsS --retry 6 --retry-delay 5 --retry-max-time 120 \
+    -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$@"
+}
 
 : "${PPA:?PPA is required, e.g. ppa:goabonga/poc}"
 : "${SOURCE:?SOURCE is required}"

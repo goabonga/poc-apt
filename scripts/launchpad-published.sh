@@ -26,7 +26,11 @@ set -euo pipefail
 # the same way for a long time, an empty answer included (X-Cache: HIT, a
 # growing Age): a source created minutes ago read as missing, and a build
 # that was over for 25 minutes as still building. It honours no-cache.
-lp_curl() { curl -fsS -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$@"; }
+# Its 5xx answers (a 503 now and then) are transient: they are retried.
+lp_curl() {
+  curl -fsS --retry 6 --retry-delay 5 --retry-max-time 120 \
+    -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$@"
+}
 
 : "${PPA:?PPA is required, e.g. ppa:goabonga/poc}"
 : "${SOURCE:?SOURCE is required}"
@@ -53,9 +57,10 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
     --data-urlencode "source_name=$SOURCE" \
     --data-urlencode "exact_match=true" \
     --data-urlencode "version=$VERSION" \
-    | jq -r '.entries[0].self_link // empty')
+    | jq -r '.entries[0].self_link // empty') || { echo "::warning::the Launchpad API failed, trying again"; sleep "$INTERVAL"; continue; }
   if [ -n "$source_link" ]; then
-    statuses=$(lp_curl "$source_link?ws.op=getPublishedBinaries" | jq -r '[.entries[].status] | sort | join(" ")')
+    statuses=$(lp_curl "$source_link?ws.op=getPublishedBinaries" | jq -r '[.entries[].status] | sort | join(" ")') \
+      || { echo "::warning::the Launchpad API failed, trying again"; sleep "$INTERVAL"; continue; }
     echo "binaries: ${statuses:-none yet}"
     # A Superseded or Obsolete binary was published and a newer version
     # replaced it: it is not waited for.
