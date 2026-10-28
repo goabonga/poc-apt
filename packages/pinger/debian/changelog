@@ -1,3 +1,9 @@
+poc-pinger (0.6.0-1+test1793206407) noble; urgency=medium
+
+  * **pinger**: describe what it does in its usage (`e7519d8`)
+
+ -- Chris <goabonga@pm.me>  Wed, 28 Oct 2026 16:54:04 +0000
+
 poc-pinger (0.6.0-1+test1793204559) noble; urgency=medium
 
   * **pinger**: describe what it does in its usage (`e7519d8`)
