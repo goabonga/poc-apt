@@ -49,6 +49,8 @@ jobs:
       # separated by spaces; empty when nothing was uploaded, which skips the
       # Launchpad job.
       source_versions: ${{ steps.upload.outputs.source_versions }}
+      # The series whose upload failed, for the summary of the next job.
+      failed_series: ${{ steps.upload.outputs.failed_series }}
     steps:
       - uses: actions/checkout@v7
 
@@ -153,18 +155,41 @@ jobs:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           scripts/build-source.sh "${{ inputs.component }}" "${{ inputs.version }}" -S
           KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')
           versions=""
+          failed=""
           for series in $SERIES; do
             version="${{ inputs.version }}-${{ env.DEB_REVISION }}~${series}1"
             changes="dist/poc-${{ inputs.component }}_${version}_source.changes"
-            debsign -k"$KEY_ID" -p"gpg --batch --yes --passphrase $GPG_PASSPHRASE --pinentry-mode loopback" "$changes"
-            dput "${{ vars.LAUNCHPAD_PPA }}" "$changes"
-            versions="${versions} ${version}"
+            if ! debsign -k"$KEY_ID" -p"gpg --batch --yes --passphrase $GPG_PASSPHRASE --pinentry-mode loopback" "$changes"; then
+              echo "::error::could not sign the $series upload"
+              failed="${failed} ${series}"
+              continue
+            fi
+            # Launchpad's upload server answers "550 ... internal server
+            # error" now and then, and did to the second of several uploads
+            # sent one after the other (confirmed for real). -f because a
+            # half-sent upload leaves a marker dput would refuse to retry.
+            uploaded=""
+            for attempt in 1 2 3; do
+              if dput -f "${{ vars.LAUNCHPAD_PPA }}" "$changes"; then
+                uploaded=1
+                break
+              fi
+              echo "::warning::upload of $series failed (attempt $attempt/3)"
+              sleep "$((attempt * 20))"
+            done
+            if [ -n "$uploaded" ]; then
+              versions="${versions} ${version}"
+            else
+              failed="${failed} ${series}"
+            fi
+            sleep 15
           done
           echo "source_versions=${versions# }" >> "$GITHUB_OUTPUT"
+          echo "failed_series=${failed# }" >> "$GITHUB_OUTPUT"
 
       - name: Report back to poc-app
         # CROSS_REPO_TOKEN is the same fine-grained PAT poc-app uses to
@@ -192,6 +217,7 @@ jobs:
           JOB_STATUS: ${{ job.status }}
           PPA: ${{ vars.LAUNCHPAD_PPA }}
           SOURCE_VERSIONS: ${{ steps.upload.outputs.source_versions }}
+          FAILED_SERIES: ${{ steps.upload.outputs.failed_series }}
         run: |
           {
             echo "## Package build: ${JOB_STATUS}"
@@ -207,7 +233,20 @@ jobs:
             else
               echo "| PPA upload | skipped (no signing secrets or LAUNCHPAD_PPA) |"
             fi
+            if [ -n "${FAILED_SERIES:-}" ]; then
+              echo "| Upload failed | ${FAILED_SERIES} |"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail when an upload failed
+        # After the summary and the report, so the series that did get
+        # uploaded are still followed by the launchpad job.
+        if: steps.upload.outputs.failed_series != ''
+        env:
+          FAILED_SERIES: ${{ steps.upload.outputs.failed_series }}
+        run: |
+          echo "::error::the upload failed for: ${FAILED_SERIES}"
+          exit 1
 
   # Launchpad builds the uploaded source package on its own, minutes later and
   # possibly failing: the job above only knows the upload went through. This
@@ -216,7 +255,9 @@ jobs:
   launchpad:
     name: launchpad build (${{ inputs.component }} ${{ inputs.version }})
     needs: build
-    if: needs.build.outputs.source_versions != ''
+    # Also after a failed build job: it fails when only some series could be
+    # uploaded, and the ones that were still have builds to follow.
+    if: ${{ !cancelled() && needs.build.outputs.source_versions != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
