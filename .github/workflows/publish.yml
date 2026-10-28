@@ -172,6 +172,29 @@ jobs:
             -f "client_payload[kind]=apt" \
             -f "client_payload[url]=${{ steps.github_release.outputs.url }}"
 
+      - name: Job summary
+        if: ${{ !cancelled() }}
+        env:
+          JOB_STATUS: ${{ job.status }}
+          PPA: ${{ vars.LAUNCHPAD_PPA }}
+          SOURCE_VERSION: ${{ steps.upload.outputs.source_version }}
+        run: |
+          {
+            echo "## Package build: ${JOB_STATUS}"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Component | \`${{ inputs.component }}\` |"
+            echo "| Upstream version | \`${{ inputs.version }}\` |"
+            echo "| Debian version | \`${{ inputs.version }}-${DEB_REVISION}\` |"
+            echo "| Release | [\`${{ inputs.component }}-v${{ inputs.version }}\`](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${{ inputs.component }}-v${{ inputs.version }}) |"
+            if [ -n "$SOURCE_VERSION" ]; then
+              echo "| PPA upload | \`${SOURCE_VERSION}\` to \`${PPA}\`, built by the launchpad job |"
+            else
+              echo "| PPA upload | skipped (no signing secrets or LAUNCHPAD_PPA) |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # Launchpad builds the uploaded source package on its own, minutes later and
   # possibly failing: the job above only knows the upload went through. This
   # one follows the build, in a job of its own so that the long wait does not
