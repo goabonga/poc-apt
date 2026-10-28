@@ -1,3 +1,9 @@
+poc-pinger (0.6.0-1+test1793202480) noble; urgency=medium
+
+  * **pinger**: describe what it does in its usage (`e7519d8`)
+
+ -- Chris <goabonga@pm.me>  Wed, 28 Oct 2026 15:48:37 +0000
+
 poc-pinger (0.5.0-1+test1793198199) noble; urgency=medium
 
   * **pinger**: accept -v as a short form of --version (`8b860e8`)
