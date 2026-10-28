@@ -112,9 +112,21 @@ jobs:
           set -euo pipefail
           tag="${{ inputs.component }}-v${{ inputs.version }}"
           deb="dist/poc-${{ inputs.component }}_${{ inputs.version }}-${{ env.DEB_REVISION }}_amd64.deb"
-          gh release create "$tag" "$deb" --title "$tag" \
-            --notes "Debian package built from poc-app@$tag." \
-            --repo "${{ github.repository }}"
+          if gh release view "$tag" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            # A rerun for a version that already got this far (a failed
+            # upload to the PPA, say). The .deb of each run has its own
+            # Debian revision and poc-app takes the first asset of the
+            # release, so the release is left with the new .deb only.
+            for asset in $(gh release view "$tag" --repo "${{ github.repository }}" \
+              --json assets -q ".assets[].name"); do
+              gh release delete-asset "$tag" "$asset" --yes --repo "${{ github.repository }}"
+            done
+            gh release upload "$tag" "$deb" --repo "${{ github.repository }}"
+          else
+            gh release create "$tag" "$deb" --title "$tag" \
+              --notes "Debian package built from poc-app@$tag." \
+              --repo "${{ github.repository }}"
+          fi
           # The plain "url" field (gh's name for the raw REST API's
           # "browser_download_url") doesn't accept a Bearer token for a
           # private repo's asset - confirmed for real, 404 regardless of
