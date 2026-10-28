@@ -13,7 +13,10 @@
 # creates that tag). -S builds a source-only package (for `dput` to a
 # Launchpad PPA, the default); -b builds a binary .deb too, for local
 # testing or a GitHub Release attachment. With -S, SERIES (space separated,
-# "noble" by default) names the Ubuntu series to make one upload for.
+# "noble" by default) names the Ubuntu series to make one upload for, and
+# ARCHS (space separated, e.g. "amd64 arm64"; every architecture by default)
+# the architectures it is built for. ORIG_TARBALL points at an orig tarball
+# built earlier to use as it is, instead of fetching and vendoring the sources.
 #
 # Launchpad's builders have no network access, so everything the build
 # needs - including third-party Go modules - has to already be inside the
@@ -32,31 +35,42 @@ TAG="$COMPONENT-v$VERSION"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-echo "fetching poc-app@$TAG"
-# poc-app is a private repo. The plain codeload.github.com/.../archive/
-# URL 404s even with a correctly-scoped Authorization header when the
-# token is a fine-grained PAT - confirmed for real against the user's own
-# PAT (Contents: Read and write on poc-app, verified in the GitHub UI).
-# The official REST API tarball endpoint works instead: it 302s to a
-# pre-signed, time-limited codeload URL (a `?token=` query string, not a
-# header), so the redirect needs no Authorization forwarding at all -
-# also confirmed for real. GH_TOKEN needs Contents:read on poc-app; the
-# caller passes CROSS_REPO_TOKEN for that.
-auth=()
-[ -n "${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")
-curl -fsSL -L "${auth[@]}" -H "Accept: application/vnd.github+json" \
-  -o "$WORK/src.tar.gz" \
-  "https://api.github.com/repos/goabonga/poc-app/tarball/$TAG"
+if [ -n "${ORIG_TARBALL:-}" ]; then
+  # The orig tarball was built once by an earlier job and is reused as it is:
+  # Launchpad rejects a same-named orig whose bytes differ, and two builds of
+  # the same tree are not byte-identical. Only its content is needed here, for
+  # the changelog notes.
+  echo "using the orig tarball $ORIG_TARBALL"
+  mkdir -p "$WORK/extracted"
+  tar -xzf "$ORIG_TARBALL" -C "$WORK/extracted"
+  cp "$ORIG_TARBALL" "$WORK/${PKG}_${VERSION}.orig.tar.gz"
+else
+  echo "fetching poc-app@$TAG"
+  # poc-app is a private repo. The plain codeload.github.com/.../archive/
+  # URL 404s even with a correctly-scoped Authorization header when the
+  # token is a fine-grained PAT - confirmed for real against the user's own
+  # PAT (Contents: Read and write on poc-app, verified in the GitHub UI).
+  # The official REST API tarball endpoint works instead: it 302s to a
+  # pre-signed, time-limited codeload URL (a `?token=` query string, not a
+  # header), so the redirect needs no Authorization forwarding at all -
+  # also confirmed for real. GH_TOKEN needs Contents:read on poc-app; the
+  # caller passes CROSS_REPO_TOKEN for that.
+  auth=()
+  [ -n "${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")
+  curl -fsSL -L "${auth[@]}" -H "Accept: application/vnd.github+json" \
+    -o "$WORK/src.tar.gz" \
+    "https://api.github.com/repos/goabonga/poc-app/tarball/$TAG"
 
-mkdir -p "$WORK/extracted"
-tar -xzf "$WORK/src.tar.gz" -C "$WORK/extracted" --strip-components=1
+  mkdir -p "$WORK/extracted"
+  tar -xzf "$WORK/src.tar.gz" -C "$WORK/extracted" --strip-components=1
 
-echo "vendoring Go modules"
-( cd "$WORK/extracted" && go mod vendor )
+  echo "vendoring Go modules"
+  ( cd "$WORK/extracted" && go mod vendor )
 
-# Debian naming: <source>_<upstream-version>.orig.tar.gz, vendored so the
-# builder never has to touch the network.
-tar -czf "$WORK/${PKG}_${VERSION}.orig.tar.gz" -C "$WORK/extracted" .
+  # Debian naming: <source>_<upstream-version>.orig.tar.gz, vendored so the
+  # builder never has to touch the network.
+  tar -czf "$WORK/${PKG}_${VERSION}.orig.tar.gz" -C "$WORK/extracted" .
+fi
 
 # Launchpad rejects re-uploading a version it has already accepted
 # ("Rejected" email, no build) - confirmed for real, hit repeatedly while
@@ -132,6 +146,11 @@ for series in "${targets[@]}"; do
   cp "$WORK/${PKG}_${VERSION}.orig.tar.gz" "$BUILD_DIR/"
   tar -xzf "$BUILD_DIR/${PKG}_${VERSION}.orig.tar.gz" -C "$SRC_DIR"
   cp -r "$ROOT/packages/$COMPONENT/debian" "$SRC_DIR/debian"
+  if [ -n "${ARCHS:-}" ]; then
+    # The architectures Launchpad builds the package for: a source upload
+    # cannot be split per architecture, only restricted to some of them.
+    sed -i "s/^Architecture: .*/Architecture: ${ARCHS}/" "$SRC_DIR/debian/control"
+  fi
   if [ -n "$series" ]; then
     sed -i "1s/^\([^ ]*\) (\([^)]*\)) [^;]*;/\1 (\2~${series}1) ${series};/" \
       "$SRC_DIR/debian/changelog"
