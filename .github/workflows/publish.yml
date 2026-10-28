@@ -286,19 +286,29 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # Launchpad builds the uploaded source packages on its own, minutes later and
-  # possibly failing: the jobs above only know the uploads went through. This
-  # one follows the builds of every series and architecture.
+  # Launchpad builds the uploaded source package of each series on its own,
+  # minutes later and possibly failing, then publishes its binaries, much
+  # later still: the jobs above only know the uploads went through. One job per
+  # series follows its builds (one per architecture), tells poc-app as soon as
+  # the .deb files exist, then follows the publication of the binaries, which
+  # is when `apt install` starts to work.
   launchpad:
-    name: launchpad build (${{ inputs.component }} ${{ inputs.version }})
+    name: launchpad (${{ matrix.series }})
     needs: [plan, source, upload]
     # Also when some uploads failed: the series that did go through still
-    # have builds to follow.
+    # have builds to follow, and the ones that did not are reported.
     if: ${{ !cancelled() && needs.plan.outputs.ppa_upload == 'true' && needs.source.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 150
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        series: ${{ fromJSON(needs.plan.outputs.series) }}
+    env:
+      PPA: ${{ vars.LAUNCHPAD_PPA }}
+      SOURCE: poc-${{ inputs.component }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -307,162 +317,195 @@ jobs:
       - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
-          pattern: uploaded-*
+          name: uploaded-${{ matrix.series }}
           path: uploaded
-          merge-multiple: true
 
-      - name: List what was uploaded
+      - name: Find what was uploaded
         id: uploaded
         run: |
-          versions=$(cat uploaded/uploaded-* 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)
-          echo "versions=$versions" >> "$GITHUB_OUTPUT"
-          {
-            echo "## Uploads: ${{ needs.upload.result }}"
-            echo
-            echo "Series asked for: $(echo '${{ needs.plan.outputs.series }}' | jq -r 'join(", ")')"
-            echo "Architectures: ${{ needs.plan.outputs.archs }}"
-            echo
-            if [ -n "$versions" ]; then
-              echo "Uploaded: ${versions// /, }"
-            else
-              echo "Nothing was uploaded."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          version=$(cat "uploaded/uploaded-${{ matrix.series }}" 2>/dev/null || true)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          [ -n "$version" ] || echo "::error::nothing was uploaded for ${{ matrix.series }}"
 
-      # A step's summary is uploaded when the step ends and cannot be edited
-      # afterwards, so progress shows as several steps: the first five follow
-      # the builds for five minutes each and write a snapshot of them, the
-      # last one until they are over (or the time is up). A step that finds the
-      # builds over does nothing.
-      - name: Follow the Launchpad builds (1/6)
-        if: ${{ !cancelled() && steps.uploaded.outputs.versions != '' }}
-        env:
-          PPA: ${{ vars.LAUNCHPAD_PPA }}
-          SOURCE: poc-${{ inputs.component }}
-          VERSIONS: ${{ steps.uploaded.outputs.versions }}
-          STATE_FILE: ${{ runner.temp }}/launchpad-state
-          SLICE: "300"
-        run: scripts/launchpad-build-status.sh
-
-      - name: Follow the Launchpad builds (2/6)
-        if: ${{ !cancelled() && steps.uploaded.outputs.versions != '' }}
-        env:
-          PPA: ${{ vars.LAUNCHPAD_PPA }}
-          SOURCE: poc-${{ inputs.component }}
-          VERSIONS: ${{ steps.uploaded.outputs.versions }}
-          STATE_FILE: ${{ runner.temp }}/launchpad-state
-          SLICE: "300"
-        run: scripts/launchpad-build-status.sh
-
-      - name: Follow the Launchpad builds (3/6)
-        if: ${{ !cancelled() && steps.uploaded.outputs.versions != '' }}
-        env:
-          PPA: ${{ vars.LAUNCHPAD_PPA }}
-          SOURCE: poc-${{ inputs.component }}
-          VERSIONS: ${{ steps.uploaded.outputs.versions }}
-          STATE_FILE: ${{ runner.temp }}/launchpad-state
-          SLICE: "300"
-        run: scripts/launchpad-build-status.sh
-
-      - name: Follow the Launchpad builds (4/6)
-        if: ${{ !cancelled() && steps.uploaded.outputs.versions != '' }}
-        env:
-          PPA: ${{ vars.LAUNCHPAD_PPA }}
-          SOURCE: poc-${{ inputs.component }}
-          VERSIONS: ${{ steps.uploaded.outputs.versions }}
-          STATE_FILE: ${{ runner.temp }}/launchpad-state
-          SLICE: "300"
-        run: scripts/launchpad-build-status.sh
-
-      - name: Follow the Launchpad builds (5/6)
-        if: ${{ !cancelled() && steps.uploaded.outputs.versions != '' }}
-        env:
-          PPA: ${{ vars.LAUNCHPAD_PPA }}
-          SOURCE: poc-${{ inputs.component }}
-          VERSIONS: ${{ steps.uploaded.outputs.versions }}
-          STATE_FILE: ${{ runner.temp }}/launchpad-state
-          SLICE: "300"
-        run: scripts/launchpad-build-status.sh
-
-      - name: Follow the Launchpad builds (6/6)
-        if: ${{ !cancelled() && steps.uploaded.outputs.versions != '' }}
-        env:
-          PPA: ${{ vars.LAUNCHPAD_PPA }}
-          SOURCE: poc-${{ inputs.component }}
-          VERSIONS: ${{ steps.uploaded.outputs.versions }}
-          STATE_FILE: ${{ runner.temp }}/launchpad-state
-          SLICE: "0"
-        run: scripts/launchpad-build-status.sh
-
-      - name: Settle the outcome of the builds
+      - name: Follow the Launchpad builds
         id: build
-        if: ${{ !cancelled() && steps.uploaded.outputs.versions != '' }}
+        if: steps.uploaded.outputs.version != ''
         env:
-          STATE_FILE: ${{ runner.temp }}/launchpad-state
-        run: |
-          # The last slice always writes it; a crashed step may not have.
-          for key in state build_url log_url; do
-            echo "$key=$(grep "^$key=" "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)" >> "$GITHUB_OUTPUT"
-          done
+          VERSIONS: ${{ steps.uploaded.outputs.version }}
+        run: scripts/launchpad-build-status.sh
 
       - name: Collect the packages Launchpad built
         id: debs
-        if: ${{ !cancelled() && steps.uploaded.outputs.versions != '' }}
+        if: ${{ !cancelled() && steps.uploaded.outputs.version != '' }}
         env:
-          PPA: ${{ vars.LAUNCHPAD_PPA }}
-          SOURCE: poc-${{ inputs.component }}
-          VERSIONS: ${{ steps.uploaded.outputs.versions }}
-        run: |
-          json=$(scripts/launchpad-binaries.sh)
-          {
-            echo "### Packages built by Launchpad"
-            echo
-            if [ "$(jq length <<<"$json")" -eq 0 ]; then
-              echo "No package was built."
-            else
-              echo "| Series | Architecture | Package |"
-              echo "| --- | --- | --- |"
-              jq -r '.[] | "| \(.series) | \(.arch) | [\(.url | split("/")[-1])](\(.url)) |"' <<<"$json"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          VERSIONS: ${{ steps.uploaded.outputs.version }}
+        run: scripts/launchpad-binaries.sh
 
-      - name: Tell poc-app how the build ended
-        # Sent whatever the outcome, so poc-app learns about a failure too,
-        # and with the packages Launchpad built: they are what poc-app
-        # attaches to its release. The same fine-grained PAT as above, with
-        # Contents (read/write) on poc-app for the repository_dispatch.
-        if: ${{ !cancelled() }}
+      - name: Tell poc-app the packages of the series are built
+        # As soon as they exist, so poc-app attaches them to the release
+        # while the rest is still going on. The same fine-grained PAT as
+        # above, with Contents (read/write) on poc-app for the dispatch.
+        if: ${{ !cancelled() && steps.debs.outputs.debs != '' && steps.debs.outputs.debs != '[]' }}
         env:
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
-          # A series that could not be uploaded is a failure, whatever the
-          # builds of the others say.
-          STATE: ${{ needs.upload.result != 'success' && 'failure' || steps.build.outputs.state || 'failure' }}
-          BUILD_URL: ${{ steps.build.outputs.build_url }}
-          LOG_URL: ${{ steps.build.outputs.log_url }}
-          DEBS: ${{ steps.debs.outputs.debs || '[]' }}
+          DEBS: ${{ steps.debs.outputs.debs }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "::warning::secrets.CROSS_REPO_TOKEN unset; poc-app was not notified"
             exit 0
           fi
           gh api repos/goabonga/poc-app/dispatches \
-            -f event_type=package-build \
+            -f event_type=package-built \
             -f "client_payload[component]=${{ inputs.component }}" \
             -f "client_payload[version]=${{ inputs.version }}" \
-            -f "client_payload[kind]=apt" \
+            -f "client_payload[series]=${{ matrix.series }}" \
             -f "client_payload[package]=poc-${{ inputs.component }}" \
-            -f "client_payload[ppa]=${{ vars.LAUNCHPAD_PPA }}" \
-            -f "client_payload[status]=$STATE" \
-            -f "client_payload[url]=$BUILD_URL" \
-            -f "client_payload[log_url]=$LOG_URL" \
             -f "client_payload[debs]=$DEBS"
 
-      - name: Fail when something did not go through
-        if: ${{ needs.upload.result != 'success' || steps.build.outputs.state != 'success' }}
+      - name: Follow the publication of the binaries
+        id: published
+        # A build that succeeded is not installable yet.
+        if: ${{ !cancelled() && steps.build.outputs.state == 'success' }}
         env:
-          UPLOADS: ${{ needs.upload.result }}
-          STATE: ${{ steps.build.outputs.state }}
-          BUILD_URL: ${{ steps.build.outputs.build_url }}
+          VERSION: ${{ steps.uploaded.outputs.version }}
+        run: scripts/launchpad-published.sh
+
+      - name: Write what happened to the series
+        id: result
+        if: ${{ !cancelled() }}
+        env:
+          VERSION_UPLOADED: ${{ steps.uploaded.outputs.version }}
+          STATE: ${{ steps.build.outputs.state || 'not-uploaded' }}
+          PUBLISHED: ${{ steps.published.outputs.published || 'false' }}
+          BUILDS: ${{ steps.build.outputs.builds || '[]' }}
         run: |
-          echo "::error::uploads ${UPLOADS}, Launchpad build ${STATE:-not followed}: ${BUILD_URL}"
+          jq -n -c \
+            --arg series "${{ matrix.series }}" \
+            --arg version "$VERSION_UPLOADED" \
+            --arg state "$STATE" \
+            --argjson published "$PUBLISHED" \
+            --argjson builds "$BUILDS" \
+            '{series: $series, version: $version, state: $state, published: $published, builds: $builds}' \
+            > "result-${{ matrix.series }}.json"
+          cat "result-${{ matrix.series }}.json"
+
+      - name: Keep the result for the report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: result-${{ matrix.series }}
+          path: result-${{ matrix.series }}.json
+          if-no-files-found: error
+
+      - name: Job summary
+        if: ${{ !cancelled() }}
+        run: |
+          result="result-${{ matrix.series }}.json"
+          {
+            echo "## Launchpad ${{ matrix.series }}: $(jq -r 'if .state == "success" and .published then "built and published" else .state end' "$result")"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Source | \`poc-${{ inputs.component }}\` \`$(jq -r '.version' "$result")\` |"
+            echo "| Published | $(jq -r '.published' "$result") |"
+            echo
+            if [ "$(jq '.builds | length' "$result")" -gt 0 ]; then
+              echo "| Architecture | State | Build | Log |"
+              echo "| --- | --- | --- | --- |"
+              jq -r '.builds[] | "| \(.arch) | \(.state) | [page](\(.url)) | \(if .log_url != "" then "[log](\(.log_url))" else "" end) |"' "$result"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail when the series did not go through
+        if: ${{ !cancelled() && (steps.build.outputs.state != 'success' || steps.published.outputs.published != 'true') }}
+        env:
+          STATE: ${{ steps.build.outputs.state || 'not uploaded' }}
+          PUBLISHED: ${{ steps.published.outputs.published }}
+        run: |
+          echo "::error::${{ matrix.series }}: build ${STATE}, published ${PUBLISHED:-no}"
+          exit 1
+
+  # Once every series is over, one job tells poc-app how each series and
+  # architecture ended: it writes the install section in the release notes,
+  # opens an issue for each build that failed and publishes the release. It is
+  # a single job so that only one event edits the notes.
+  report:
+    name: report (${{ inputs.component }} ${{ inputs.version }})
+    needs: [plan, source, launchpad]
+    if: ${{ !cancelled() && needs.plan.outputs.ppa_upload == 'true' && needs.source.result == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: result-*
+          path: results
+          merge-multiple: true
+
+      - name: Assemble the results
+        id: results
+        env:
+          SERIES: ${{ needs.plan.outputs.series }}
+        run: |
+          set -euo pipefail
+          # A series that left no result (its job could not even start) is a
+          # failure, not a series that is missing from the report.
+          results="[]"
+          for series in $(jq -r '.[]' <<<"$SERIES"); do
+            file="results/result-${series}.json"
+            if [ -f "$file" ]; then
+              entry=$(cat "$file")
+            else
+              entry=$(jq -n -c --arg series "$series" '{series: $series, version: "", state: "missing", published: false, builds: []}')
+            fi
+            results=$(jq -c --argjson entry "$entry" '. + [$entry]' <<<"$results")
+          done
+          if [ "$(jq '[.[] | select(.state != "success" or (.published | not))] | length' <<<"$results")" -eq 0 ]; then
+            status=success
+          else
+            status=failure
+          fi
+          echo "results=$results" >> "$GITHUB_OUTPUT"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Tell poc-app how every series ended
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+          RESULTS: ${{ steps.results.outputs.results }}
+          STATUS: ${{ steps.results.outputs.status }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::secrets.CROSS_REPO_TOKEN unset; poc-app was not notified"
+            exit 0
+          fi
+          gh api repos/goabonga/poc-app/dispatches \
+            -f event_type=package-complete \
+            -f "client_payload[component]=${{ inputs.component }}" \
+            -f "client_payload[version]=${{ inputs.version }}" \
+            -f "client_payload[package]=poc-${{ inputs.component }}" \
+            -f "client_payload[ppa]=${{ vars.LAUNCHPAD_PPA }}" \
+            -f "client_payload[status]=$STATUS" \
+            -f "client_payload[run_url]=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -f "client_payload[results]=$RESULTS"
+
+      - name: Job summary
+        if: ${{ !cancelled() }}
+        env:
+          RESULTS: ${{ steps.results.outputs.results }}
+          STATUS: ${{ steps.results.outputs.status }}
+        run: |
+          {
+            echo "## Report to poc-app: ${STATUS}"
+            echo
+            echo "| Series | Version | State | Published | Architectures |"
+            echo "| --- | --- | --- | --- | --- |"
+            jq -r '.[] | "| \(.series) | \(.version | if . == "" then "-" else "`" + . + "`" end) | \(.state) | \(.published) | \(.builds | map("\(.arch): \(.state)") | join(", ")) |"' <<<"$RESULTS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail when something did not go through
+        if: ${{ steps.results.outputs.status != 'success' }}
+        run: |
+          echo "::error::at least one series did not build or was not published"
           exit 1
